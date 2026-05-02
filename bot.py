@@ -9,10 +9,7 @@ from pathlib import Path
 from PIL import Image
 import telebot
 from telebot import types
-
-TOKEN = "8613630902:AAEehO6bqcVhU6gN77hVTfDz7kE0YPPGcKg"
-CHANNEL_ID = "@brmodels095"
-CHANNEL_URL = "https://t.me/brmodels095"
+from config import TOKEN, CHANNEL_ID, CHANNEL_URL
 
 bot = telebot.TeleBot(TOKEN)
 user_files = {}
@@ -34,7 +31,8 @@ class FullModelConverter:
         root = tree.getroot()
         ns = 'http://www.collada.org/2005/11/COLLADASchema'
         obj_path = self.temp_dir / f"{Path(dae_path).stem}.obj"
-        vertices, normals, uvs, triangles_data = [], [], [], []
+        vertices, normals, uvs, faces = [], [], [], []
+        
         for mesh in root.iter(f'{{{ns}}}mesh'):
             positions = normals_data = uvs_data = None
             for source in mesh.findall(f'{{{ns}}}source'):
@@ -51,18 +49,22 @@ class FullModelConverter:
             if positions: vertices.extend(positions)
             if normals_data: normals.extend(normals_data)
             if uvs_data: uvs.extend(uvs_data)
+            
             for triangles in mesh.findall(f'{{{ns}}}triangles'):
                 p_elems = triangles.findall(f'{{{ns}}}p')
                 if p_elems:
                     indices = list(map(int, p_elems[0].text.strip().split()))
                     for i in range(0, len(indices), 3):
                         if i + 2 < len(indices):
-                            triangles_data.append([indices[i]+1, indices[i+1]+1, indices[i+2]+1])
+                            faces.append([indices[i]+1, indices[i+1]+1, indices[i+2]+1])
+
         with open(obj_path, 'w') as f:
-            for v in vertices: f.write(f"v {v[0]} {v[1]} {v[2]}\n")
-            for vt in uvs: f.write(f"vt {vt[0]} {vt[1]}\n")
-            for vn in normals: f.write(f"vn {vn[0]} {vn[1]} {vn[2]}\n")
-            for face in triangles_data: f.write(f"f {face[0]} {face[1]} {face[2]}\n")
+            for v in vertices:
+                f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+            for vt in uvs:
+                f.write(f"vt {vt[0]:.6f} {vt[1]:.6f}\n")
+            for face in faces:
+                f.write(f"f {face[0]} {face[1]} {face[2]}\n")
         return obj_path
 
     def _parse_jbeam(self, jbeam_path):
@@ -83,26 +85,28 @@ class FullModelConverter:
     def _mesh_to_obj(self, mesh_path):
         mesh_name = Path(mesh_path).stem
         try:
-            vertices, faces, normals, uvs = [], [], [], []
+            vertices, faces, uvs = [], [], []
             with open(mesh_path, 'rb') as f:
                 f.read(8)
                 vertex_count = struct.unpack('i', f.read(4))[0]
                 for _ in range(vertex_count):
                     x, y, z = struct.unpack('fff', f.read(12))
                     vertices.append([x, y, z])
-                    nx, ny, nz = struct.unpack('fff', f.read(12))
-                    normals.append([nx, ny, nz])
+                    f.read(12)
                     u, v = struct.unpack('ff', f.read(8))
                     uvs.append([u, v])
                 triangle_count = struct.unpack('i', f.read(4))[0]
                 for _ in range(triangle_count):
                     faces.append(list(struct.unpack('iii', f.read(12))))
+                    
             obj_path = self.temp_dir / f"{mesh_name}.obj"
             with open(obj_path, 'w') as f:
-                for v in vertices: f.write(f"v {v[0]} {v[1]} {v[2]}\n")
-                for vt in uvs: f.write(f"vt {vt[0]} {vt[1]}\n")
-                for vn in normals: f.write(f"vn {vn[0]} {vn[1]} {vn[2]}\n")
-                for face in faces: f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
+                for v in vertices:
+                    f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+                for vt in uvs:
+                    f.write(f"vt {vt[0]:.6f} {vt[1]:.6f}\n")
+                for face in faces:
+                    f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
             return obj_path
         except:
             return None
