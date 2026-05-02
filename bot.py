@@ -18,7 +18,6 @@ bot = telebot.TeleBot(TOKEN)
 user_files = {}
 
 def analyze_file(file_path):
-    """AI-анализ 3D-файла на совместимость с ZModeler Android"""
     try:
         ext = Path(file_path).suffix.lower()
         size_kb = os.path.getsize(file_path) // 1024
@@ -52,13 +51,23 @@ def analyze_file(file_path):
             except:
                 pass
         
-        elif ext in ['.dff', '.3ds']:
-            # Бинарные форматы — только размер и тип
-            pass
-        
-        # Формируем вердикт
         issues = []
         warnings = []
+        import_support = "✅ Поддерживается"
+        export_support = ""
+        
+        if ext == '.obj':
+            import_support = "✅ Поддерживается"
+            export_support = "✅ Экспорт в DFF"
+        elif ext == '.dff':
+            import_support = "✅ Поддерживается"
+            export_support = "⚠️ Экспорт в OBJ, но не обратно в DFF"
+        elif ext == '.3ds':
+            import_support = "✅ Поддерживается"
+            export_support = "⚠️ Экспорт не поддерживается. Импортируй .3ds → Экспортируй как .obj"
+        elif ext == '.dae':
+            import_support = "❌ Не поддерживается"
+            export_support = "📌 Конвертируй через бота в .obj"
         
         if ext in ['.obj', '.dae'] and verts > 0:
             if verts > 65535:
@@ -75,19 +84,14 @@ def analyze_file(file_path):
         if size_kb > 10000:
             warnings.append(f"📦 Файл {size_kb} КБ — может долго грузиться")
         
-        # Вердикт
-        if ext == '.dff':
-            verdict = "⚠️ DFF — импорт НЕ поддерживается. Конвертируй в OBJ через бота."
-        elif ext == '.3ds':
-            verdict = "⚠️ 3DS — может открыться, но лучше конвертировать в OBJ."
-        elif issues:
+        if issues:
             verdict = "❌ Скорее всего не откроется"
         elif warnings:
             verdict = "⚠️ Может работать с ограничениями"
-        elif verts > 0:
+        elif verts > 0 or ext in ['.dff', '.3ds']:
             verdict = "✅ Должен открыться без проблем"
         else:
-            verdict = "📦 Файл проанализирован. Размер: {} КБ".format(size_kb)
+            verdict = "📦 Файл проанализирован"
         
         return {
             'ext': ext,
@@ -97,10 +101,30 @@ def analyze_file(file_path):
             'size_kb': size_kb,
             'issues': issues,
             'warnings': warnings,
-            'verdict': verdict
+            'verdict': verdict,
+            'import_support': import_support,
+            'export_support': export_support
         }
     except Exception as e:
-        return {'ext': Path(file_path).suffix, 'verts': 0, 'faces': 0, 'uvs': 0, 'size_kb': 0, 'issues': [], 'warnings': [], 'verdict': f'❌ Ошибка анализа: {e}'}
+        return {'ext': Path(file_path).suffix, 'verts': 0, 'faces': 0, 'uvs': 0, 'size_kb': 0, 'issues': [], 'warnings': [], 'verdict': f'❌ Ошибка анализа: {e}', 'import_support': '❓ Неизвестно', 'export_support': '❓ Неизвестно'}
+
+
+def get_advisor_tips(ext, verts):
+    tips = []
+    if ext == '.dae':
+        tips.append("💡 Совет: ZModeler на Android не открывает .dae напрямую. Используй бота для конвертации.")
+    elif ext == '.3ds':
+        tips.append("💡 Совет: После импорта 3DS, проверь текстуры. Иногда пути к ним слетают.")
+    elif ext == '.dff':
+        tips.append("💡 Совет: Если игра крашится при появлении модели, проблема в иерархии или битых коллизиях.")
+        tips.append("💡 Совет: ZModeler на Android может вылетать при импорте DFF, если он создан в старой версии PC.")
+    elif ext == '.obj':
+        tips.append("💡 Совет: Перед экспортом в DFF пересчитай нормали (Edit → Normals → Recalculate).")
+    
+    if verts > 65535:
+        tips.append("⚠️ Лимит: 65 535 вершин. Без упрощения ZModeler крашнется.")
+    
+    return tips
 
 
 class FullModelConverter:
@@ -347,7 +371,7 @@ def start(msg):
         "Возможности:\n\n"
         "🎨 PNG → BTX (сжатый, 512x512)\n"
         "📦 .dae / .jbeam → .obj + ZIP текстур\n"
-        "🔍 AI-анализ: .obj, .dae, .dff, .3ds\n\n"
+        "🔍 AI-анализ + советы для ZModeler\n\n"
         "📂 Отправляйте файлы (можно много)\n"
         "Затем ✅ Конвертировать или 🔍 Анализ\n\n"
         "Канал: @brmodels095"
@@ -397,7 +421,6 @@ def handle_file(msg):
         user_files[uid] = []
     user_files[uid].append(fname)
 
-    # Авто-анализ для всех форматов
     info = analyze_file(fname)
     analysis_text = ""
     if info:
@@ -426,17 +449,35 @@ def analyze_cmd(msg):
             text = f"🔍 *Анализ: {fname}*\n\n"
             if info['verts'] > 0:
                 text += f"📊 *Статистика:*\n• Вершин: {info['verts']}\n• Полигонов: {info['faces']}\n• UV: {info['uvs']}\n"
-            text += f"• Размер: {info['size_kb']} КБ\n• Формат: {info['ext']}\n\n📋 *Вердикт:*\n{info['verdict']}\n"
+            text += f"• Размер: {info['size_kb']} КБ\n"
+            text += f"• Формат: {info['ext']}\n\n"
+            text += f"📥 *Импорт в ZModeler:* {info['import_support']}\n"
+            text += f"📤 *Экспорт:* {info['export_support']}\n"
+            text += f"📋 *Вердикт:*\n{info['verdict']}\n"
+            
+            tips = get_advisor_tips(info['ext'], info['verts'])
+            if tips:
+                text += "\n🧠 *Советник:*\n" + "\n".join(tips)
+                
             if info['issues']:
                 text += f"\n⚠️ *Проблемы:*\n" + "\n".join(info['issues'])
             if info['warnings']:
                 text += f"\n💡 *Замечания:*\n" + "\n".join(info['warnings'])
-            if info['ext'] == '.dff':
-                text += "\n\n📌 *DFF не импортируется в ZModeler.*\nОтправь .obj или .dae для конвертации."
+            
+            # Рекомендации на основе формата
+            text += "\n\n📌 *Рекомендация:*\n"
+            if info['ext'] == '.dae':
+                text += "• ZModeler НЕ открывает .dae\n• Конвертируй через бота в .obj\n"
             elif info['ext'] == '.3ds':
-                text += "\n\n📌 *3DS лучше конвертировать в OBJ.*\nОтправь файл боту для конвертации."
-            elif info['verts'] > 65535:
-                text += "\n\n📌 *Слишком много вершин.*\nКонвертируй через бота — авто-упрощение до 60K."
+                text += "• Импортируй .3ds в ZModeler\n• Экспортируй как .obj для дальнейшей работы\n"
+            elif info['ext'] == '.dff':
+                text += "• ZModeler открывает .dff\n• Можно редактировать и экспортировать в .obj\n"
+            elif info['ext'] == '.obj':
+                text += "• Импортируй .obj в ZModeler\n• Экспортируй в .dff для GTA SA\n"
+            
+            if info['verts'] > 65535:
+                text += "• Слишком много вершин — конвертируй через бота (авто-упрощение)\n"
+            
             bot.reply_to(msg, text, parse_mode="Markdown")
 
 
