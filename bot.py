@@ -15,8 +15,6 @@ CHANNEL_ID = "@brmodels095"
 CHANNEL_URL = "https://t.me/brmodels095"
 
 bot = telebot.TeleBot(TOKEN)
-
-# Хранилище: для каждого пользователя список файлов
 user_files = {}
 
 class FullModelConverter:
@@ -109,33 +107,100 @@ class FullModelConverter:
         except:
             return None
 
-    def _obj_to_dff(self, obj_path, output_name=None):
+    def _obj_to_dff_full(self, obj_path, output_name=None):
         obj_file = Path(obj_path)
         if output_name is None:
             output_name = obj_file.stem
         dff_path = self.output_dir / f"{output_name}.dff"
-        vertices, faces = [], []
+        
+        vertices = []
+        normals = []
+        texcoords = []
+        faces = []
+        
         with open(obj_file, 'r') as f:
             for line in f:
                 parts = line.strip().split()
                 if line.startswith('v '):
                     vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                elif line.startswith('vn '):
+                    normals.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                elif line.startswith('vt '):
+                    texcoords.append([float(parts[1]), float(parts[2])])
                 elif line.startswith('f '):
-                    face = []
+                    face_v = []
+                    face_vt = []
+                    face_vn = []
                     for p in parts[1:]:
-                        idx = int(p.split('/')[0]) - 1
-                        face.append(idx)
-                    if len(face) == 3:
-                        faces.append(face)
+                        vals = p.split('/')
+                        face_v.append(int(vals[0]) - 1)
+                        if len(vals) > 1 and vals[1]:
+                            face_vt.append(int(vals[1]) - 1)
+                        if len(vals) > 2 and vals[2]:
+                            face_vn.append(int(vals[2]) - 1)
+                    if len(face_v) == 3:
+                        faces.append((face_v, face_vt, face_vn))
+        
+        if not normals:
+            normals = [[0.0, 0.0, 1.0]] * max(len(vertices), 1)
+        
+        if not texcoords:
+            texcoords = [[0.0, 0.0]] * max(len(vertices), 1)
+        
+        use_uint = len(vertices) > 65535
+        
         with open(dff_path, 'wb') as f:
-            f.write(b'\x16\x00\x00\x00')
-            f.write(b'\x01\x00\x00\x00')
-            f.write(len(vertices).to_bytes(4, 'little'))
-            f.write(len(faces).to_bytes(4, 'little'))
+            # Clump chunk
+            geo_data = bytearray()
+            
+            # Geometry flags: vertices + normals + texcoords (0x0F)
+            flags = 0x0F
+            if use_uint:
+                flags |= 0x100
+            
+            geo_data.extend(struct.pack('<I', flags))
+            geo_data.extend(struct.pack('<I', len(vertices)))
+            geo_data.extend(struct.pack('<I', len(faces)))
+            
+            # Вершины
             for v in vertices:
-                f.write(struct.pack('fff', v[0], v[1], v[2]))
-            for fc in faces:
-                f.write(struct.pack('HHH', fc[0], fc[1], fc[2]))
+                geo_data.extend(struct.pack('<fff', v[0], v[1], v[2]))
+            
+            # Нормали
+            for n in normals[:len(vertices)]:
+                geo_data.extend(struct.pack('<fff', n[0], n[1], n[2]))
+            
+            # Текстурные координаты
+            for vt in texcoords[:len(vertices)]:
+                geo_data.extend(struct.pack('<ff', vt[0], 1.0 - vt[1]))
+            
+            # Треугольники
+            for face_v, face_vt, face_vn in faces:
+                if use_uint:
+                    geo_data.extend(struct.pack('<III', face_v[0], face_v[1], face_v[2]))
+                else:
+                    geo_data.extend(struct.pack('<HHH', face_v[0], face_v[1], face_v[2]))
+            
+            # Frame data
+            frame_data = bytearray(56)
+            # Матрица (единичная)
+            frame_data[0:4] = struct.pack('<f', 1.0)   # right.x
+            frame_data[16:20] = struct.pack('<f', 1.0)  # up.y
+            frame_data[32:36] = struct.pack('<f', 1.0)  # at.z
+            frame_data[48:52] = struct.pack('<f', 1.0)  # pos.w
+            
+            # Собираем Clump
+            clump = bytearray()
+            clump.extend(struct.pack('<I', 1))  # num frames
+            clump.extend(frame_data)
+            clump.extend(struct.pack('<I', 1))  # num geometries
+            clump.extend(geo_data)
+            
+            # Заголовок DFF
+            f.write(b'\x10\x00\x00\x00')
+            f.write(struct.pack('<I', len(clump) + 8))
+            f.write(clump)
+        
         return dff_path
 
     def _png_to_btx(self, png_path, output_name=None):
@@ -228,7 +293,7 @@ class FullModelConverter:
     def obj_to_dff_only(self, input_path):
         inp = Path(input_path)
         if inp.suffix.lower() == '.obj':
-            return self._obj_to_dff(inp)
+            return self._obj_to_dff_full(inp)
         return None
 
 
@@ -253,13 +318,13 @@ def send_subscription_message(chat_id):
 
 
 def get_menu_keyboard():
-    """Клавиатура рядом с микрофоном"""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    btn_convert = types.KeyboardButton("✅ Конвертировать")
-    btn_cancel = types.KeyboardButton("❌ Отменить")
-    btn_list = types.KeyboardButton("📋 Список файлов")
-    btn_clear = types.KeyboardButton("🗑 Очистить")
-    markup.add(btn_convert, btn_cancel, btn_list, btn_clear)
+    markup.add(
+        types.KeyboardButton("✅ Конвертировать"),
+        types.KeyboardButton("❌ Отменить"),
+        types.KeyboardButton("📋 Список файлов"),
+        types.KeyboardButton("🗑 Очистить")
+    )
     return markup
 
 
@@ -274,7 +339,7 @@ def start(msg):
     bot.reply_to(msg, (
         "Возможности:\n\n"
         "🎨 PNG → BTX (сжатый, макс 512x512)\n"
-        "🧩 OBJ → DFF\n"
+        "🧩 OBJ → DFF (полноценный)\n"
         "📦 .dae / .jbeam → .obj + текстуры в ZIP\n\n"
         "📂 Отправляйте файлы (можно много)\n"
         "Затем нажмите ✅ Конвертировать в меню\n\n"
@@ -300,7 +365,6 @@ def handle_file(msg):
         send_subscription_message(msg.chat.id)
         return
     
-    # Проверка общего размера
     total_size = msg.document.file_size
     if uid in user_files:
         for fname in user_files[uid]:
@@ -311,12 +375,10 @@ def handle_file(msg):
         bot.reply_to(msg, "❌ Общий размер файлов > 50 МБ")
         return
     
-    # Скачиваем файл
     file_info = bot.get_file(msg.document.file_id)
     downloaded = bot.download_file(file_info.file_path)
     fname = msg.document.file_name
     
-    # Если файл с таким именем уже есть, добавляем номер
     base, ext = os.path.splitext(fname)
     counter = 1
     while fname in (user_files.get(uid, [])):
@@ -376,7 +438,6 @@ def convert_cmd(msg):
         except Exception as e:
             bot.send_message(uid, f"❌ Ошибка в {fname}: {e}")
     
-    # Очищаем список
     user_files[uid] = []
     bot.send_message(uid, "✅ Готово! Отправьте новые файлы.", reply_markup=get_menu_keyboard())
 
@@ -385,7 +446,6 @@ def convert_cmd(msg):
 def cancel_cmd(msg):
     uid = msg.from_user.id
     if uid in user_files:
-        # Удаляем файлы
         for fname in user_files[uid]:
             if os.path.exists(fname):
                 os.remove(fname)
