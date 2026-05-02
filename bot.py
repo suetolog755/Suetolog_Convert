@@ -103,16 +103,12 @@ bpy.ops.export_dff.dff_export(
         return output_path
 
     def _textures_to_single_txd(self, texture_folder, txd_name):
-        """
-        Пакует ВСЕ текстуры из папки в ОДИН .txd файл
-        """
         txd_path = self.output_dir / f"{txd_name}.txd"
         
         if not Path(texture_folder).exists():
             print(f"[!] Папка с текстурами не найдена: {texture_folder}")
             return None
 
-        # Собираем все текстуры в одну папку
         dds_folder = self.temp_dir / f"txd_{txd_name}"
         dds_folder.mkdir(exist_ok=True)
 
@@ -127,7 +123,6 @@ bpy.ops.export_dff.dff_export(
             shutil.rmtree(dds_folder, ignore_errors=True)
             return None
 
-        # Пакуем в TXD
         subprocess.run([
             "magic-txd-cli", "create",
             "--input", str(dds_folder),
@@ -140,7 +135,6 @@ bpy.ops.export_dff.dff_export(
         return txd_path
 
     def beamng_full(self, input_path):
-        """Конверт BeamNG: .dae или .jbeam + текстуры в ОДИН .txd"""
         inp = Path(input_path)
         
         if inp.suffix == '.dae':
@@ -148,9 +142,7 @@ bpy.ops.export_dff.dff_export(
             mesh = trimesh.load(inp, force='mesh')
             mesh.export(obj_path, file_type='obj')
             dff = self._blender_to_dff(obj_path, inp.stem)
-            
             txd = self._textures_to_single_txd(inp.parent, inp.stem)
-            
             print(f"[+] DFF готов: {dff}")
             if txd:
                 print(f"[+] TXD готов: {txd}")
@@ -173,7 +165,6 @@ bpy.ops.export_dff.dff_export(
                 merged.export(merged_path)
                 dff = self._blender_to_dff(merged_path, name)
                 
-                # Собираем текстуры в одну временную папку, потом пакуем в один TXD
                 if textures:
                     tex_temp = self.temp_dir / f"tex_{name}"
                     tex_temp.mkdir(exist_ok=True)
@@ -197,7 +188,6 @@ bpy.ops.export_dff.dff_export(
             return None, None
 
     def gta5_full(self, model_path, texture_path=None):
-        """Конверт GTA V: .yft/.ydr + .ytd в .dff и ОДИН .txd"""
         model = Path(model_path)
         
         extract_dir = self.temp_dir / f"ext_{model.stem}"
@@ -237,7 +227,7 @@ bpy.ops.export_dff.dff_export(
 
 
 # ===== ТЕЛЕГРАМ-БОТ =====
-TOKEN = 8613630902:AAEHjhOWk9VDJKer1dYbEIdnvaLwLSavdy0
+TOKEN = "8613630902:AAEHjhOWk9VDJKer1dYbEldnvaLwLSavdy0"
 
 try:
     import telebot
@@ -262,9 +252,8 @@ try:
     @bot.message_handler(content_types=['document'])
     def handle_file(msg):
         try:
-            # Проверка размера файла
             if msg.document.file_size > 50 * 1024 * 1024:
-                bot.reply_to(msg, "❌ Файл превышает лимит 50 МБ. Отправь поменьше.")
+                bot.reply_to(msg, "❌ Файл превышает лимит 50 МБ.")
                 return
 
             file_info = bot.get_file(msg.document.file_id)
@@ -314,5 +303,4 @@ try:
     bot.polling()
 
 except ImportError:
-    print("Telebot не установлен. Работаю как CLI-скрипт.")
-    print("Использование: python bot.py <файл>")
+    print("Telebot не установлен.")
