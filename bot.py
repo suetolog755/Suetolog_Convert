@@ -6,7 +6,6 @@ import subprocess
 from pathlib import Path
 import numpy as np
 from PIL import Image
-import trimesh
 
 class FullModelConverter:
     def __init__(self):
@@ -14,6 +13,27 @@ class FullModelConverter:
         self.temp_dir = Path("temp_processing")
         self.output_dir.mkdir(exist_ok=True)
         self.temp_dir.mkdir(exist_ok=True, parents=True)
+
+    def _dae_to_obj(self, dae_path):
+        """Конвертирует .dae в .obj через асс импортёр"""
+        dae_file = Path(dae_path)
+        obj_path = self.temp_dir / f"{dae_file.stem}.obj"
+        
+        script = f"""
+import bpy
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete()
+bpy.ops.wm.collada_import(filepath='{dae_file}')
+for obj in bpy.context.scene.objects:
+    if obj.type == 'MESH':
+        obj.select_set(True)
+bpy.ops.export_scene.obj(filepath='{obj_path}')
+"""
+        script_path = self.temp_dir / "dae_to_obj.py"
+        script_path.write_text(script)
+        subprocess.run(["blender", "--background", "--python", str(script_path)], check=True)
+        script_path.unlink(missing_ok=True)
+        return obj_path
 
     def _parse_jbeam(self, jbeam_path):
         with open(jbeam_path, 'r', encoding='utf-8') as f:
@@ -63,29 +83,33 @@ class FullModelConverter:
                 for _ in range(triangle_count):
                     faces.append(list(struct.unpack('iii', f.read(12))))
 
-            mesh = trimesh.Trimesh(
-                vertices=np.array(vertices),
-                faces=np.array(faces),
-                vertex_normals=np.array(normals),
-                visual=trimesh.visual.TextureVisuals(uv=np.array(uvs))
-            )
-            
+            # Запись OBJ вручную
             obj_path = self.temp_dir / f"{mesh_name}.obj"
-            mesh.export(obj_path, file_type='obj')
+            with open(obj_path, 'w') as f:
+                for v in vertices:
+                    f.write(f"v {v[0]} {v[1]} {v[2]}\n")
+                for vt in uvs:
+                    f.write(f"vt {vt[0]} {vt[1]}\n")
+                for vn in normals:
+                    f.write(f"vn {vn[0]} {vn[1]} {vn[2]}\n")
+                for face in faces:
+                    i1, i2, i3 = face[0]+1, face[1]+1, face[2]+1
+                    f.write(f"f {i1}/{i1}/{i1} {i2}/{i2}/{i2} {i3}/{i3}/{i3}\n")
+            
             return obj_path
             
         except Exception as e:
             print(f"[!] Ошибка .mesh {mesh_path}: {e}")
             return None
 
-    def _blender_to_dff(self, input_path, output_name):
+    def _obj_to_dff(self, obj_path, output_name):
         output_path = self.output_dir / f"{output_name}.dff"
         
         script = f"""
 import bpy
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete()
-bpy.ops.import_scene.obj(filepath='{input_path}')
+bpy.ops.import_scene.obj(filepath='{obj_path}')
 for obj in bpy.context.scene.objects:
     if obj.type == 'MESH':
         obj.select_set(True)
@@ -95,8 +119,7 @@ bpy.ops.export_dff.dff_export(
     export_collision=False
 )
 """
-        
-        script_path = self.temp_dir / "convert.py"
+        script_path = self.temp_dir / "obj_to_dff.py"
         script_path.write_text(script)
         subprocess.run(["blender", "--background", "--python", str(script_path)], check=True)
         script_path.unlink(missing_ok=True)
@@ -135,10 +158,8 @@ bpy.ops.export_dff.dff_export(
         inp = Path(input_path)
         
         if inp.suffix == '.dae':
-            obj_path = self.temp_dir / f"{inp.stem}.obj"
-            mesh = trimesh.load(inp, force='mesh')
-            mesh.export(obj_path, file_type='obj')
-            dff = self._blender_to_dff(obj_path, inp.stem)
+            obj_path = self._dae_to_obj(inp)
+            dff = self._obj_to_dff(obj_path, inp.stem)
             txd = self._textures_to_single_txd(inp.parent, inp.stem)
             return dff, txd
             
@@ -154,10 +175,8 @@ bpy.ops.export_dff.dff_export(
                         obj_paths.append(p)
             
             if obj_paths:
-                merged = trimesh.util.concatenate([trimesh.load(p) for p in obj_paths])
-                merged_path = self.temp_dir / f"{name}_merged.obj"
-                merged.export(merged_path)
-                dff = self._blender_to_dff(merged_path, name)
+                # Просто берём первый меш
+                dff = self._obj_to_dff(obj_paths[0], name)
                 
                 if textures:
                     tex_temp = self.temp_dir / f"tex_{name}"
@@ -175,41 +194,6 @@ bpy.ops.export_dff.dff_export(
                 return None, None
         else:
             return None, None
-
-    def gta5_full(self, model_path, texture_path=None):
-        model = Path(model_path)
-        
-        extract_dir = self.temp_dir / f"ext_{model.stem}"
-        extract_dir.mkdir(exist_ok=True)
-        
-        subprocess.run([
-            "Codewalker.CLI", "extract",
-            "-i", str(model),
-            "-o", str(extract_dir),
-            "-f", "obj"
-        ], check=True)
-        
-        obj_files = list(extract_dir.glob("*.obj"))
-        if not obj_files:
-            raise FileNotFoundError("OBJ не извлечён из модели")
-        
-        dff = self._blender_to_dff(obj_files[0], model.stem)
-        
-        txd = None
-        if texture_path:
-            tex_dir = self.temp_dir / f"tex_{Path(texture_path).stem}"
-            tex_dir.mkdir(exist_ok=True)
-            
-            subprocess.run([
-                "RageLibConsole", "extract",
-                "-i", str(texture_path),
-                "-o", str(tex_dir),
-                "-f", "png"
-            ], check=True)
-            
-            txd = self._textures_to_single_txd(tex_dir, model.stem)
-        
-        return dff, txd
 
 
 # ===== ТЕЛЕГРАМ-БОТ =====
@@ -262,16 +246,8 @@ def handle_file(msg):
                 bot.reply_to(msg, "❌ Не удалось сконвертировать")
                 
         elif fname.endswith(('.yft', '.ydr')):
-            dff, txd = converter.gta5_full(fname)
-            if dff:
-                with open(dff, 'rb') as f:
-                    bot.send_document(msg.chat.id, f, caption="✅ DFF модель")
-            if txd:
-                with open(txd, 'rb') as f:
-                    bot.send_document(msg.chat.id, f, caption="✅ TXD текстуры")
-            if not dff and not txd:
-                bot.reply_to(msg, "❌ Не удалось сконвертировать")
-                
+            bot.reply_to(msg, "⏳ GTA V конвертация пока недоступна")
+                    
         else:
             bot.reply_to(msg, f"❌ Формат не поддерживается: {fname}")
             
