@@ -134,16 +134,19 @@ class FullModelConverter:
         if len(vertices) <= max_verts:
             return vertices, uvs, faces
         
-        step = max(1, len(vertices) // max_verts)
+        step = len(vertices) / max_verts
         old_to_new = {}
         new_vertices = []
         new_uvs = []
         
-        for i in range(0, len(vertices), step):
-            old_to_new[i] = len(new_vertices)
-            new_vertices.append(vertices[i])
-            if i < len(uvs):
-                new_uvs.append(uvs[i])
+        i = 0.0
+        while i < len(vertices):
+            idx = int(i)
+            old_to_new[idx] = len(new_vertices)
+            new_vertices.append(vertices[idx])
+            if idx < len(uvs):
+                new_uvs.append(uvs[idx])
+            i += step
         
         new_faces = []
         for face in faces:
@@ -191,7 +194,6 @@ class FullModelConverter:
         if not vertices or not faces:
             return None
 
-        # Упрощение
         vertices, uvs, faces = self._simplify_model(vertices, uvs, faces)
         
         while len(uvs) < len(vertices):
@@ -230,7 +232,9 @@ class FullModelConverter:
         if not vertices:
             return None
         
-        vertices, uvs, faces = self._simplify_model(vertices, uvs, faces)
+        print(f"[DEBUG] До упрощения: {len(vertices)} вершин, {len(faces)} граней")
+        vertices, uvs, faces = self._simplify_model(vertices, uvs, faces, 60000)
+        print(f"[DEBUG] После упрощения: {len(vertices)} вершин, {len(faces)} граней")
         
         while len(uvs) < len(vertices):
             uvs.append([0.0, 0.0])
@@ -463,7 +467,9 @@ def handle_file(msg):
 
     base, ext = os.path.splitext(fname)
     counter = 1
-    while fname in (user_files.get(uid, [])):
+    # Проверяем уникальность имени
+    existing_names = user_files.get(uid, [])
+    while fname in existing_names:
         fname = f"{base}_{counter}{ext}"
         counter += 1
 
@@ -497,6 +503,8 @@ def analyze_cmd(msg):
         return
 
     for fname in user_files[uid]:
+        if not os.path.exists(fname):
+            continue
         info = analyze_file(fname)
         if info:
             text = f"🔍 *Анализ: {fname}*\n\n"
@@ -532,14 +540,18 @@ def convert_cmd(msg):
         send_subscription_message(msg.chat.id)
         return
     if uid not in user_files or not user_files[uid]:
-        bot.reply_to(msg, "❌ Нет файлов.", reply_markup=get_menu_keyboard())
+        bot.reply_to(msg, "❌ Нет файлов. Отправьте файлы сначала.", reply_markup=get_menu_keyboard())
         return
 
-    files = user_files[uid]
+    files = user_files[uid].copy()
     bot.reply_to(msg, f"🚀 Конвертирую {len(files)} файлов...")
 
     for fname in files:
         try:
+            if not os.path.exists(fname):
+                bot.send_message(uid, f"❌ Файл не найден: {fname}")
+                continue
+                
             if fname.lower().endswith('.png'):
                 btx = converter._png_to_btx(fname)
                 if btx:
@@ -547,19 +559,19 @@ def convert_cmd(msg):
                         bot.send_document(uid, f, caption=f"✅ {Path(btx).name}")
 
             elif fname.lower().endswith('.dae'):
+                bot.send_message(uid, f"⏳ Конвертирую {fname}...")
                 obj_file, zip_file = converter.beamng_full(fname)
                 if obj_file:
                     with open(obj_file, 'rb') as f:
                         bot.send_document(uid, f, caption="✅ OBJ (упрощён)")
-                    # Анализ результата
                     info = analyze_file(str(obj_file))
                     if info:
-                        bot.send_message(uid, f"🔍 После упрощения: {info['verts']} вершин", parse_mode="Markdown")
+                        bot.send_message(uid, f"🔍 После упрощения: {info['verts']} вершин\n📋 Вердикт: {info['verdict']}", parse_mode="Markdown")
                 if zip_file:
                     with open(zip_file, 'rb') as f:
                         bot.send_document(uid, f, caption="✅ Текстуры ZIP")
                 if not obj_file:
-                    bot.send_message(uid, f"❌ Не удалось: {fname}")
+                    bot.send_message(uid, f"❌ Не удалось конвертировать: {fname}")
 
             elif fname.lower().endswith('.jbeam'):
                 obj_file, zip_file = converter.beamng_full(fname)
@@ -571,27 +583,35 @@ def convert_cmd(msg):
                         bot.send_document(uid, f, caption="✅ Текстуры ZIP")
 
             elif fname.lower().endswith('.obj'):
-                # Упрощаем OBJ
                 info_before = analyze_file(fname)
-                simplified = converter._obj_simplify(fname)
-                if simplified:
-                    with open(simplified, 'rb') as f:
-                        bot.send_document(uid, f, caption="✅ OBJ (упрощён)")
-                    info_after = analyze_file(str(simplified))
-                    if info_before and info_after:
-                        bot.send_message(uid, 
-                            f"📊 *До:* {info_before['verts']} вершин\n📊 *После:* {info_after['verts']} вершин\n✅ Готово для ZModeler!",
-                            parse_mode="Markdown")
+                if info_before and info_before['verts'] > 60000:
+                    bot.send_message(uid, f"⏳ Упрощаю {fname} ({info_before['verts']} вершин)...")
+                    simplified = converter._obj_simplify(fname)
+                    if simplified:
+                        with open(simplified, 'rb') as f:
+                            bot.send_document(uid, f, caption="✅ OBJ (упрощён)")
+                        info_after = analyze_file(str(simplified))
+                        if info_after:
+                            bot.send_message(uid, 
+                                f"📊 До: {info_before['verts']} вершин\n📊 После: {info_after['verts']} вершин",
+                                parse_mode="Markdown")
                 else:
-                    bot.send_message(uid, f"❌ Не удалось упростить: {fname}")
+                    with open(fname, 'rb') as f:
+                        bot.send_document(uid, f, caption="✅ OBJ (уже в лимите)")
 
             else:
                 bot.send_message(uid, f"❌ Формат не поддерживается: {fname}")
+                
         except Exception as e:
-            bot.send_message(uid, f"❌ Ошибка в {fname}: {e}")
+            bot.send_message(uid, f"❌ Ошибка в {fname}: {str(e)}")
 
+    # Очищаем список после конвертации
+    for fname in files:
+        if os.path.exists(fname):
+            try: os.remove(fname)
+            except: pass
     user_files[uid] = []
-    bot.send_message(uid, "✅ Готово!", reply_markup=get_menu_keyboard())
+    bot.send_message(uid, "✅ Готово! Отправьте новые файлы.", reply_markup=get_menu_keyboard())
 
 
 @bot.message_handler(func=lambda msg: msg.text == "❌ Отменить")
