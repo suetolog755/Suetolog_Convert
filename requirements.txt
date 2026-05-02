@@ -1,5 +1,2 @@
-numpy
 Pillow
-pyglm
-rwfury
 pytelegrambotapi
