@@ -113,94 +113,113 @@ class FullModelConverter:
             output_name = obj_file.stem
         dff_path = self.output_dir / f"{output_name}.dff"
         
-        vertices = []
-        normals = []
-        texcoords = []
-        faces = []
-        
+        verts, norms, uvs, faces_idx = [], [], [], []
         with open(obj_file, 'r') as f:
             for line in f:
                 parts = line.strip().split()
+                if not parts: continue
                 if line.startswith('v '):
-                    vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                    verts.append([float(parts[1]), float(parts[2]), float(parts[3])])
                 elif line.startswith('vn '):
-                    normals.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                    norms.append([float(parts[1]), float(parts[2]), float(parts[3])])
                 elif line.startswith('vt '):
-                    texcoords.append([float(parts[1]), float(parts[2])])
+                    uvs.append([float(parts[1]), float(parts[2])])
                 elif line.startswith('f '):
-                    face_v = []
-                    face_vt = []
-                    face_vn = []
+                    v_idx, vt_idx, vn_idx = [], [], []
                     for p in parts[1:]:
                         vals = p.split('/')
-                        face_v.append(int(vals[0]) - 1)
-                        if len(vals) > 1 and vals[1]:
-                            face_vt.append(int(vals[1]) - 1)
-                        if len(vals) > 2 and vals[2]:
-                            face_vn.append(int(vals[2]) - 1)
-                    if len(face_v) == 3:
-                        faces.append((face_v, face_vt, face_vn))
-        
-        if not normals:
-            normals = [[0.0, 0.0, 1.0]] * max(len(vertices), 1)
-        
-        if not texcoords:
-            texcoords = [[0.0, 0.0]] * max(len(vertices), 1)
-        
-        use_uint = len(vertices) > 65535
-        
+                        v_idx.append(int(vals[0])-1)
+                        if len(vals) > 1 and vals[1]: vt_idx.append(int(vals[1])-1)
+                        if len(vals) > 2 and vals[2]: vn_idx.append(int(vals[2])-1)
+                    if len(v_idx) == 3:
+                        faces_idx.append((v_idx, vt_idx, vn_idx))
+
+        if not uvs: uvs = [[0.0, 0.0]] * len(verts)
+        if not norms: norms = [[0.0, 0.0, 1.0]] * len(verts)
+
+        # Ensure vertex count <= 65535
+        verts = verts[:65535]
+        uvs = uvs[:65535]
+        norms = norms[:65535]
+        faces_idx = [f for f in faces_idx if all(v < len(verts) for v in f[0])]
+
         with open(dff_path, 'wb') as f:
-            # Clump chunk
+            # Write triangles
+            triangles_data = bytearray()
+            for v_idx, vt_idx, vn_idx in faces_idx:
+                # Order: v2, v1, material(0), v3
+                triangles_data.extend(struct.pack('<HHHH', v_idx[1], v_idx[0], 0, v_idx[2]))
+            
+            # Vertex positions
+            verts_data = bytearray()
+            for v in verts:
+                verts_data.extend(struct.pack('<fff', v[0], v[1], v[2]))
+            
+            # Normals
+            norms_data = bytearray()
+            for n in norms:
+                norms_data.extend(struct.pack('<fff', n[0], n[1], n[2]))
+            
+            # UVs
+            uvs_data = bytearray()
+            for uv in uvs:
+                uvs_data.extend(struct.pack('<ff', uv[0], 1.0 - uv[1]))
+            
+            # Geometry header
+            flags = 0x0001 | 0x0002 | 0x0004 | 0x0010  # tris, positions, uvs, normals
+            geo_header = bytearray()
+            geo_header.extend(struct.pack('<H', flags))
+            geo_header.extend(struct.pack('<B', 1))  # 1 UV set
+            geo_header.extend(struct.pack('<B', 0))  # native flags
+            geo_header.extend(struct.pack('<I', len(faces_idx)))
+            geo_header.extend(struct.pack('<I', len(verts)))
+            geo_header.extend(struct.pack('<I', 1))  # 1 morph target
+            # Ambient, Diffuse, Specular (not used in SA > 3.4 but keep for compat)
+            geo_header.extend(struct.pack('<fff', 0.0, 0.0, 0.0))
+            
+            # Geometry data (order: colors? no -> UVs -> Triangles -> Vertex Positions -> Normals)
             geo_data = bytearray()
+            geo_data.extend(uvs_data)
+            geo_data.extend(triangles_data)
+            geo_data.extend(verts_data)
+            geo_data.extend(norms_data)
             
-            # Geometry flags: vertices + normals + texcoords (0x0F)
-            flags = 0x0F
-            if use_uint:
-                flags |= 0x100
+            # Geometry section (Header + Data)
+            geo_section = bytearray()
+            geo_section.extend(geo_header)
+            geo_section.extend(geo_data)
             
-            geo_data.extend(struct.pack('<I', flags))
-            geo_data.extend(struct.pack('<I', len(vertices)))
-            geo_data.extend(struct.pack('<I', len(faces)))
-            
-            # Вершины
-            for v in vertices:
-                geo_data.extend(struct.pack('<fff', v[0], v[1], v[2]))
-            
-            # Нормали
-            for n in normals[:len(vertices)]:
-                geo_data.extend(struct.pack('<fff', n[0], n[1], n[2]))
-            
-            # Текстурные координаты
-            for vt in texcoords[:len(vertices)]:
-                geo_data.extend(struct.pack('<ff', vt[0], 1.0 - vt[1]))
-            
-            # Треугольники
-            for face_v, face_vt, face_vn in faces:
-                if use_uint:
-                    geo_data.extend(struct.pack('<III', face_v[0], face_v[1], face_v[2]))
-                else:
-                    geo_data.extend(struct.pack('<HHH', face_v[0], face_v[1], face_v[2]))
-            
-            # Frame data
+            # Frame List (1 frame)
             frame_data = bytearray(56)
-            # Матрица (единичная)
-            frame_data[0:4] = struct.pack('<f', 1.0)   # right.x
-            frame_data[16:20] = struct.pack('<f', 1.0)  # up.y
-            frame_data[32:36] = struct.pack('<f', 1.0)  # at.z
-            frame_data[48:52] = struct.pack('<f', 1.0)  # pos.w
+            frame_data[0:4] = struct.pack('<f', 1.0)
+            frame_data[16:20] = struct.pack('<f', 1.0)
+            frame_data[32:36] = struct.pack('<f', 1.0)
+            frame_data[48:52] = struct.pack('<f', 1.0)
             
-            # Собираем Clump
-            clump = bytearray()
-            clump.extend(struct.pack('<I', 1))  # num frames
-            clump.extend(frame_data)
-            clump.extend(struct.pack('<I', 1))  # num geometries
-            clump.extend(geo_data)
+            # Clump
+            clump_data = bytearray()
+            clump_data.extend(struct.pack('<I', 1))  # num atomics
+            clump_data.extend(struct.pack('<I', 0))  # num lights
+            clump_data.extend(struct.pack('<I', 0))  # num cameras
             
-            # Заголовок DFF
-            f.write(b'\x10\x00\x00\x00')
-            f.write(struct.pack('<I', len(clump) + 8))
-            f.write(clump)
-        
+            # Write file
+            f.write(b'\x10\x00\x00\x00')  # DFF magic
+            total_size = 4 + 4 + len(clump_data) + 4 + 4 + 4 + 56 + 4 + 4 + 4 + len(geo_section)
+            f.write(struct.pack('<I', total_size))
+            # Clump struct
+            f.write(struct.pack('<H', 0x0001))  # struct header
+            f.write(struct.pack('<H', 0x0000))
+            f.write(struct.pack('<I', len(clump_data)))
+            f.write(clump_data)
+            # Frame List
+            f.write(struct.pack('<I', 1))
+            f.write(frame_data)
+            # Geometry List
+            f.write(struct.pack('<I', 1))
+            f.write(struct.pack('<H', 0x0001))  # struct header
+            f.write(struct.pack('<H', 0x0000))
+            f.write(struct.pack('<I', len(geo_section)))
+            f.write(geo_section)
         return dff_path
 
     def _png_to_btx(self, png_path, output_name=None):
