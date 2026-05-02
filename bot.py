@@ -18,6 +18,7 @@ bot = telebot.TeleBot(TOKEN)
 user_files = {}
 
 def analyze_file(file_path):
+    """AI-анализ для ZModeler Android"""
     try:
         ext = Path(file_path).suffix.lower()
         size_kb = os.path.getsize(file_path) // 1024
@@ -42,11 +43,11 @@ def analyze_file(file_path):
                     for source in mesh.findall(f'{{{ns}}}source'):
                         if 'positions' in source.get('id', ''):
                             fa = source.find(f'{{{ns}}}float_array')
-                            if fa is not None:
+                            if fa is not None and fa.text:
                                 verts += len(fa.text.strip().split()) // 3
                     for triangles in mesh.findall(f'{{{ns}}}triangles'):
                         p_elems = triangles.findall(f'{{{ns}}}p')
-                        if p_elems:
+                        if p_elems and p_elems[0].text:
                             faces += len(p_elems[0].text.strip().split()) // 3
             except:
                 pass
@@ -61,69 +62,58 @@ def analyze_file(file_path):
             export_support = "✅ Экспорт в DFF"
         elif ext == '.dff':
             import_support = "✅ Поддерживается"
-            export_support = "⚠️ Экспорт в OBJ, но не обратно в DFF"
+            export_support = "⚠️ Экспорт в OBJ"
         elif ext == '.3ds':
             import_support = "✅ Поддерживается"
-            export_support = "⚠️ Экспорт не поддерживается. Импортируй .3ds → Экспортируй как .obj"
+            export_support = "⚠️ Экспорт как .obj"
         elif ext == '.dae':
             import_support = "❌ Не поддерживается"
-            export_support = "📌 Конвертируй через бота в .obj"
+            export_support = "📌 Конвертируй через бота"
         
         if ext in ['.obj', '.dae'] and verts > 0:
             if verts > 65535:
-                issues.append(f"⚠️ {verts} вершин > 65535 — ZModeler крашнется")
+                issues.append(f"⚠️ {verts} вершин > 65535 — краш ZModeler")
             elif verts > 40000:
                 warnings.append(f"⚡ {verts} вершин — возможны лаги")
-            
             if faces > 50000:
                 issues.append(f"⚠️ {faces} полигонов — высокий шанс краша")
-            
             if uvs == 0 and ext == '.obj':
                 warnings.append("🖌 Нет UV-развёртки")
         
         if size_kb > 10000:
-            warnings.append(f"📦 Файл {size_kb} КБ — может долго грузиться")
+            warnings.append(f"📦 {size_kb} КБ — может долго грузиться")
         
         if issues:
             verdict = "❌ Скорее всего не откроется"
         elif warnings:
             verdict = "⚠️ Может работать с ограничениями"
         elif verts > 0 or ext in ['.dff', '.3ds']:
-            verdict = "✅ Должен открыться без проблем"
+            verdict = "✅ Должен открыться"
         else:
-            verdict = "📦 Файл проанализирован"
+            verdict = "📦 Проанализирован"
         
         return {
-            'ext': ext,
-            'verts': verts,
-            'faces': faces,
-            'uvs': uvs,
-            'size_kb': size_kb,
-            'issues': issues,
-            'warnings': warnings,
-            'verdict': verdict,
-            'import_support': import_support,
+            'ext': ext, 'verts': verts, 'faces': faces, 'uvs': uvs,
+            'size_kb': size_kb, 'issues': issues, 'warnings': warnings,
+            'verdict': verdict, 'import_support': import_support,
             'export_support': export_support
         }
-    except Exception as e:
-        return {'ext': Path(file_path).suffix, 'verts': 0, 'faces': 0, 'uvs': 0, 'size_kb': 0, 'issues': [], 'warnings': [], 'verdict': f'❌ Ошибка анализа: {e}', 'import_support': '❓ Неизвестно', 'export_support': '❓ Неизвестно'}
+    except:
+        return None
 
 
 def get_advisor_tips(ext, verts):
     tips = []
     if ext == '.dae':
-        tips.append("💡 Совет: ZModeler на Android не открывает .dae напрямую. Используй бота для конвертации.")
+        tips.append("💡 ZModeler не открывает .dae. Конвертируй через бота.")
     elif ext == '.3ds':
-        tips.append("💡 Совет: После импорта 3DS, проверь текстуры. Иногда пути к ним слетают.")
+        tips.append("💡 После импорта 3DS проверь текстуры.")
     elif ext == '.dff':
-        tips.append("💡 Совет: Если игра крашится при появлении модели, проблема в иерархии или битых коллизиях.")
-        tips.append("💡 Совет: ZModeler на Android может вылетать при импорте DFF, если он создан в старой версии PC.")
+        tips.append("💡 Если игра крашится — проблема в коллизиях.")
     elif ext == '.obj':
-        tips.append("💡 Совет: Перед экспортом в DFF пересчитай нормали (Edit → Normals → Recalculate).")
-    
+        tips.append("💡 Перед экспортом в DFF: Edit → Normals → Recalculate.")
     if verts > 65535:
-        tips.append("⚠️ Лимит: 65 535 вершин. Без упрощения ZModeler крашнется.")
-    
+        tips.append("⚠️ Лимит 65K вершин. Нужно упрощение.")
     return tips
 
 
@@ -139,53 +129,71 @@ class FullModelConverter:
             shutil.rmtree(self.temp_dir, ignore_errors=True)
         self.temp_dir.mkdir(exist_ok=True, parents=True)
 
+    def _simplify_model(self, vertices, uvs, faces, max_verts=60000):
+        """Упрощает модель до max_verts вершин"""
+        if len(vertices) <= max_verts:
+            return vertices, uvs, faces
+        
+        step = max(1, len(vertices) // max_verts)
+        old_to_new = {}
+        new_vertices = []
+        new_uvs = []
+        
+        for i in range(0, len(vertices), step):
+            old_to_new[i] = len(new_vertices)
+            new_vertices.append(vertices[i])
+            if i < len(uvs):
+                new_uvs.append(uvs[i])
+        
+        new_faces = []
+        for face in faces:
+            if all(v in old_to_new for v in face):
+                new_faces.append([old_to_new[v] for v in face])
+        
+        return new_vertices, new_uvs, new_faces
+
     def _dae_to_obj(self, dae_path):
+        """DAE → OBJ с авто-упрощением"""
         tree = ET.parse(dae_path)
         root = tree.getroot()
         ns = 'http://www.collada.org/2005/11/COLLADASchema'
         obj_path = self.temp_dir / f"{Path(dae_path).stem}.obj"
-        vertices, normals, uvs, faces = [], [], [], []
+        vertices, uvs, faces = [], [], []
         
         for mesh in root.iter(f'{{{ns}}}mesh'):
-            positions = normals_data = uvs_data = None
+            positions = None
+            uvs_data = None
+            
             for source in mesh.findall(f'{{{ns}}}source'):
                 sid = source.get('id', '')
                 float_array = source.find(f'{{{ns}}}float_array')
-                if float_array is not None:
+                if float_array is not None and float_array.text:
                     data = list(map(float, float_array.text.strip().split()))
                     if 'positions' in sid:
                         positions = [[data[i], data[i+1], data[i+2]] for i in range(0, len(data), 3)]
-                    elif 'normals' in sid:
-                        normals_data = [[data[i], data[i+1], data[i+2]] for i in range(0, len(data), 3)]
                     elif 'map' in sid.lower() or 'uv' in sid.lower():
                         uvs_data = [[data[i], data[i+1]] for i in range(0, len(data), 2)]
-            if positions: vertices.extend(positions)
-            if normals_data: normals.extend(normals_data)
-            if uvs_data: uvs.extend(uvs_data)
             
-            for triangles in mesh.findall(f'{{{ns}}}triangles'):
-                p_elems = triangles.findall(f'{{{ns}}}p')
-                if p_elems:
-                    indices = list(map(int, p_elems[0].text.strip().split()))
-                    for i in range(0, len(indices), 3):
-                        if i + 2 < len(indices):
-                            faces.append([indices[i]+1, indices[i+1]+1, indices[i+2]+1])
+            if positions:
+                start_idx = len(vertices)
+                vertices.extend(positions)
+                if uvs_data:
+                    uvs.extend(uvs_data)
+                
+                for triangles in mesh.findall(f'{{{ns}}}triangles'):
+                    p_elems = triangles.findall(f'{{{ns}}}p')
+                    if p_elems and p_elems[0].text:
+                        indices = list(map(int, p_elems[0].text.strip().split()))
+                        for i in range(0, len(indices), 3):
+                            if i + 2 < len(indices):
+                                faces.append([indices[i]+start_idx, indices[i+1]+start_idx, indices[i+2]+start_idx])
 
-        max_verts = 60000
-        if len(vertices) > max_verts:
-            keep_ratio = max_verts / len(vertices)
-            step = max(1, int(1.0 / keep_ratio))
-            new_vertices, new_uvs, new_faces, old_to_new = [], [], [], {}
-            for i in range(0, len(vertices), step):
-                old_to_new[i] = len(new_vertices)
-                new_vertices.append(vertices[i])
-                if i < len(uvs):
-                    new_uvs.append(uvs[i])
-            for face in faces:
-                if all(v in old_to_new for v in face):
-                    new_faces.append([old_to_new[v] for v in face])
-            vertices, uvs, faces = new_vertices, new_uvs, new_faces
+        if not vertices or not faces:
+            return None
 
+        # Упрощение
+        vertices, uvs, faces = self._simplify_model(vertices, uvs, faces)
+        
         while len(uvs) < len(vertices):
             uvs.append([0.0, 0.0])
 
@@ -197,6 +205,45 @@ class FullModelConverter:
             for face in faces:
                 f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
         return obj_path
+
+    def _obj_simplify(self, obj_path):
+        """Упрощает существующий OBJ файл"""
+        vertices, uvs, faces = [], [], []
+        
+        with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                if line.startswith('v '):
+                    parts = line.strip().split()
+                    vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                elif line.startswith('vt '):
+                    parts = line.strip().split()
+                    uvs.append([float(parts[1]), float(parts[2])])
+                elif line.startswith('f '):
+                    parts = line.strip().split()
+                    face = []
+                    for p in parts[1:]:
+                        idx = int(p.split('/')[0]) - 1
+                        face.append(idx)
+                    if len(face) == 3:
+                        faces.append(face)
+        
+        if not vertices:
+            return None
+        
+        vertices, uvs, faces = self._simplify_model(vertices, uvs, faces)
+        
+        while len(uvs) < len(vertices):
+            uvs.append([0.0, 0.0])
+        
+        out_path = self.output_dir / Path(obj_path).name
+        with open(out_path, 'w') as f:
+            for v in vertices:
+                f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+            for vt in uvs:
+                f.write(f"vt {vt[0]:.6f} {vt[1]:.6f}\n")
+            for face in faces:
+                f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
+        return out_path
 
     def _parse_jbeam(self, jbeam_path):
         with open(jbeam_path, 'r', encoding='utf-8') as f:
@@ -229,6 +276,9 @@ class FullModelConverter:
                 triangle_count = struct.unpack('i', f.read(4))[0]
                 for _ in range(triangle_count):
                     faces.append(list(struct.unpack('iii', f.read(12))))
+            
+            vertices, uvs, faces = self._simplify_model(vertices, uvs, faces)
+            
             obj_path = self.temp_dir / f"{mesh_name}.obj"
             with open(obj_path, 'w') as f:
                 for v in vertices:
@@ -298,6 +348,8 @@ class FullModelConverter:
         inp = Path(input_path)
         if inp.suffix == '.dae':
             obj_path = self._dae_to_obj(inp)
+            if obj_path is None:
+                return None, None
             final_obj = self.output_dir / obj_path.name
             shutil.copy(obj_path, final_obj)
             if self._has_textures(inp.parent):
@@ -370,8 +422,9 @@ def start(msg):
     bot.reply_to(msg, (
         "Возможности:\n\n"
         "🎨 PNG → BTX (сжатый, 512x512)\n"
-        "📦 .dae / .jbeam → .obj + ZIP текстур\n"
-        "🔍 AI-анализ + советы для ZModeler\n\n"
+        "📦 .dae / .jbeam → .obj (авто-упрощение)\n"
+        "🧩 .obj → .obj (авто-упрощение для ZModeler)\n"
+        "🔍 AI-анализ + советы\n\n"
         "📂 Отправляйте файлы (можно много)\n"
         "Затем ✅ Конвертировать или 🔍 Анализ\n\n"
         "Канал: @brmodels095"
@@ -449,34 +502,25 @@ def analyze_cmd(msg):
             text = f"🔍 *Анализ: {fname}*\n\n"
             if info['verts'] > 0:
                 text += f"📊 *Статистика:*\n• Вершин: {info['verts']}\n• Полигонов: {info['faces']}\n• UV: {info['uvs']}\n"
-            text += f"• Размер: {info['size_kb']} КБ\n"
-            text += f"• Формат: {info['ext']}\n\n"
-            text += f"📥 *Импорт в ZModeler:* {info['import_support']}\n"
-            text += f"📤 *Экспорт:* {info['export_support']}\n"
-            text += f"📋 *Вердикт:*\n{info['verdict']}\n"
+            text += f"• Размер: {info['size_kb']} КБ\n• Формат: {info['ext']}\n\n"
+            text += f"📥 *Импорт:* {info['import_support']}\n📤 *Экспорт:* {info['export_support']}\n"
+            text += f"📋 *Вердикт:* {info['verdict']}\n"
             
             tips = get_advisor_tips(info['ext'], info['verts'])
             if tips:
                 text += "\n🧠 *Советник:*\n" + "\n".join(tips)
-                
             if info['issues']:
                 text += f"\n⚠️ *Проблемы:*\n" + "\n".join(info['issues'])
             if info['warnings']:
                 text += f"\n💡 *Замечания:*\n" + "\n".join(info['warnings'])
             
-            # Рекомендации на основе формата
             text += "\n\n📌 *Рекомендация:*\n"
             if info['ext'] == '.dae':
-                text += "• ZModeler НЕ открывает .dae\n• Конвертируй через бота в .obj\n"
-            elif info['ext'] == '.3ds':
-                text += "• Импортируй .3ds в ZModeler\n• Экспортируй как .obj для дальнейшей работы\n"
-            elif info['ext'] == '.dff':
-                text += "• ZModeler открывает .dff\n• Можно редактировать и экспортировать в .obj\n"
+                text += "• Конвертируй через бота → .obj\n"
+            elif info['ext'] == '.obj' and info['verts'] > 65535:
+                text += "• Нажми ✅ Конвертировать — бот упростит модель\n"
             elif info['ext'] == '.obj':
-                text += "• Импортируй .obj в ZModeler\n• Экспортируй в .dff для GTA SA\n"
-            
-            if info['verts'] > 65535:
-                text += "• Слишком много вершин — конвертируй через бота (авто-упрощение)\n"
+                text += "• Импортируй в ZModeler → Export DFF\n"
             
             bot.reply_to(msg, text, parse_mode="Markdown")
 
@@ -492,16 +536,32 @@ def convert_cmd(msg):
         return
 
     files = user_files[uid]
-    bot.reply_to(msg, f"🚀 Конвертирую {len(files)}...")
+    bot.reply_to(msg, f"🚀 Конвертирую {len(files)} файлов...")
 
     for fname in files:
         try:
             if fname.lower().endswith('.png'):
                 btx = converter._png_to_btx(fname)
-                with open(btx, 'rb') as f:
-                    bot.send_document(uid, f, caption=f"✅ {Path(btx).name}")
+                if btx:
+                    with open(btx, 'rb') as f:
+                        bot.send_document(uid, f, caption=f"✅ {Path(btx).name}")
 
-            elif fname.endswith(('.dae', '.jbeam')):
+            elif fname.lower().endswith('.dae'):
+                obj_file, zip_file = converter.beamng_full(fname)
+                if obj_file:
+                    with open(obj_file, 'rb') as f:
+                        bot.send_document(uid, f, caption="✅ OBJ (упрощён)")
+                    # Анализ результата
+                    info = analyze_file(str(obj_file))
+                    if info:
+                        bot.send_message(uid, f"🔍 После упрощения: {info['verts']} вершин", parse_mode="Markdown")
+                if zip_file:
+                    with open(zip_file, 'rb') as f:
+                        bot.send_document(uid, f, caption="✅ Текстуры ZIP")
+                if not obj_file:
+                    bot.send_message(uid, f"❌ Не удалось: {fname}")
+
+            elif fname.lower().endswith('.jbeam'):
                 obj_file, zip_file = converter.beamng_full(fname)
                 if obj_file:
                     with open(obj_file, 'rb') as f:
@@ -509,13 +569,21 @@ def convert_cmd(msg):
                 if zip_file:
                     with open(zip_file, 'rb') as f:
                         bot.send_document(uid, f, caption="✅ Текстуры ZIP")
-                if not obj_file and not zip_file:
-                    bot.send_message(uid, f"❌ Не удалось: {fname}")
 
             elif fname.lower().endswith('.obj'):
-                with open(fname, 'rb') as f:
-                    bot.send_document(uid, f, caption="✅ OBJ модель")
-                bot.send_message(uid, "📌 File → Import (ZModeler) → Export DFF")
+                # Упрощаем OBJ
+                info_before = analyze_file(fname)
+                simplified = converter._obj_simplify(fname)
+                if simplified:
+                    with open(simplified, 'rb') as f:
+                        bot.send_document(uid, f, caption="✅ OBJ (упрощён)")
+                    info_after = analyze_file(str(simplified))
+                    if info_before and info_after:
+                        bot.send_message(uid, 
+                            f"📊 *До:* {info_before['verts']} вершин\n📊 *После:* {info_after['verts']} вершин\n✅ Готово для ZModeler!",
+                            parse_mode="Markdown")
+                else:
+                    bot.send_message(uid, f"❌ Не удалось упростить: {fname}")
 
             else:
                 bot.send_message(uid, f"❌ Формат не поддерживается: {fname}")
