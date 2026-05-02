@@ -52,6 +52,13 @@ def analyze_file(file_path):
             except:
                 pass
         
+        elif ext == '.dff':
+            # DFF — просто маркируем как поддерживаемый
+            pass
+        
+        elif ext == '.3ds':
+            pass
+        
         issues = []
         warnings = []
         import_support = "Поддерживается"
@@ -106,10 +113,10 @@ def get_advisor_tips(info):
     if ext == '.dae':
         tips.append("ZModeler не открывает .dae. Нажми Конвертировать.")
     elif ext == '.dff':
-        tips.append("DFF открывается в ZModeler.")
+        tips.append("DFF открывается в ZModeler. Конвертация не требуется.")
     elif ext == '.3ds':
         tips.append("3DS открывается. После импорта проверь текстуры.")
-    elif ext == '.obj' and verts <= 65535:
+    elif ext == '.obj' and verts <= 65535 and verts > 0:
         tips.append("Файл готов к импорту в ZModeler.")
     
     if verts > 65535:
@@ -157,13 +164,18 @@ class FullModelConverter:
 
     def _dae_to_obj(self, dae_path):
         try:
+            print(f"[DEBUG] Начинаю парсинг DAE: {dae_path}")
             tree = ET.parse(dae_path)
             root = tree.getroot()
+            print(f"[DEBUG] XML загружен, root: {root.tag}")
+            
             ns = 'http://www.collada.org/2005/11/COLLADASchema'
             obj_path = self.temp_dir / f"{Path(dae_path).stem}.obj"
             vertices, uvs, faces = [], [], []
             
+            mesh_count = 0
             for mesh in root.iter(f'{{{ns}}}mesh'):
+                mesh_count += 1
                 positions = None
                 uvs_data = None
                 
@@ -191,14 +203,20 @@ class FullModelConverter:
                                 if i + 2 < len(indices):
                                     faces.append([indices[i]+start_idx, indices[i+1]+start_idx, indices[i+2]+start_idx])
 
+            print(f"[DEBUG] Мешей: {mesh_count}, вершин: {len(vertices)}, граней: {len(faces)}")
+            
             if not vertices or not faces:
+                print("[DEBUG] Нет вершин или граней!")
                 return None
 
+            print("[DEBUG] Упрощаю модель...")
             vertices, uvs, faces = self._simplify_model(vertices, uvs, faces)
+            print(f"[DEBUG] После упрощения: вершин {len(vertices)}, граней {len(faces)}")
             
             while len(uvs) < len(vertices):
                 uvs.append([0.0, 0.0])
 
+            print(f"[DEBUG] Сохраняю в: {obj_path}")
             with open(obj_path, 'w') as f:
                 for v in vertices:
                     f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
@@ -206,8 +224,13 @@ class FullModelConverter:
                     f.write(f"vt {vt[0]:.6f} {vt[1]:.6f}\n")
                 for face in faces:
                     f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
+            
+            print(f"[DEBUG] Готово: {obj_path}")
             return obj_path
-        except:
+        except Exception as e:
+            print(f"[DEBUG] ОШИБКА в _dae_to_obj: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def _obj_simplify(self, obj_path):
