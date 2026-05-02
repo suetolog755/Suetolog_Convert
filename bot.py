@@ -15,6 +15,8 @@ CHANNEL_ID = "@brmodels095"
 CHANNEL_URL = "https://t.me/brmodels095"
 
 bot = telebot.TeleBot(TOKEN)
+
+# Хранилище: для каждого пользователя список файлов
 user_files = {}
 
 class FullModelConverter:
@@ -22,6 +24,11 @@ class FullModelConverter:
         self.output_dir = Path("converted_output")
         self.temp_dir = Path("temp_processing")
         self.output_dir.mkdir(exist_ok=True)
+        self.temp_dir.mkdir(exist_ok=True, parents=True)
+
+    def _clean_temp(self):
+        if self.temp_dir.exists():
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
         self.temp_dir.mkdir(exist_ok=True, parents=True)
 
     def _dae_to_obj(self, dae_path):
@@ -136,20 +143,14 @@ class FullModelConverter:
         if output_name is None:
             output_name = png_file.stem
         btx_path = self.output_dir / f"{output_name}.btx"
-        
         img = Image.open(png_file).convert("RGB")
-        
-        # Ограничение размера до 512x512
         max_size = 512
         if img.width > max_size or img.height > max_size:
             img.thumbnail((max_size, max_size), Image.LANCZOS)
-        
-        # Сжатие через JPEG для уменьшения размера
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=70)
         buf.seek(0)
         compressed = Image.open(buf).convert("RGB")
-        
         with open(btx_path, 'wb') as f:
             f.write(b'BTX\x00')
             f.write(compressed.width.to_bytes(2, 'little'))
@@ -158,6 +159,12 @@ class FullModelConverter:
             f.write(b'\x03')
             f.write(compressed.tobytes())
         return btx_path
+
+    def _has_textures(self, folder):
+        for img in Path(folder).rglob("*"):
+            if img.suffix.lower() in ['.png', '.jpg', '.jpeg', '.tga', '.bmp', '.dds']:
+                return True
+        return False
 
     def _extract_textures_to_png(self, source_folder):
         tex_folder = self.temp_dir / "extracted_textures"
@@ -184,14 +191,18 @@ class FullModelConverter:
         return zip_path
 
     def beamng_full(self, input_path):
+        self._clean_temp()
         inp = Path(input_path)
         if inp.suffix == '.dae':
             obj_path = self._dae_to_obj(inp)
             final_obj = self.output_dir / obj_path.name
             shutil.copy(obj_path, final_obj)
-            png_files = self._extract_textures_to_png(inp.parent)
-            zip_path = self._pack_to_zip(png_files, inp.stem) if png_files else None
-            return final_obj, zip_path
+            if self._has_textures(inp.parent):
+                png_files = self._extract_textures_to_png(inp.parent)
+                if png_files:
+                    zip_path = self._pack_to_zip(png_files, inp.stem)
+                    return final_obj, zip_path
+            return final_obj, None
         elif inp.suffix == '.jbeam':
             name, mesh_files, textures = self._parse_jbeam(inp)
             obj_paths = []
@@ -206,9 +217,12 @@ class FullModelConverter:
                     for p in obj_paths:
                         with open(p, 'r') as inp_f:
                             out.write(inp_f.read())
-                png_files = self._extract_textures_to_png(inp.parent)
-                zip_path = self._pack_to_zip(png_files, name) if png_files else None
-                return final_obj, zip_path
+                if textures or self._has_textures(inp.parent):
+                    png_files = self._extract_textures_to_png(inp.parent)
+                    if png_files:
+                        zip_path = self._pack_to_zip(png_files, name)
+                        return final_obj, zip_path
+                return final_obj, None
         return None, None
 
     def obj_to_dff_only(self, input_path):
@@ -238,18 +252,34 @@ def send_subscription_message(chat_id):
     bot.send_message(chat_id, "🔒 Подпишитесь чтобы пользоваться ботом\n\n" + CHANNEL_URL, reply_markup=markup)
 
 
+def get_menu_keyboard():
+    """Клавиатура рядом с микрофоном"""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    btn_convert = types.KeyboardButton("✅ Конвертировать")
+    btn_cancel = types.KeyboardButton("❌ Отменить")
+    btn_list = types.KeyboardButton("📋 Список файлов")
+    btn_clear = types.KeyboardButton("🗑 Очистить")
+    markup.add(btn_convert, btn_cancel, btn_list, btn_clear)
+    return markup
+
+
 @bot.message_handler(commands=['start'])
 def start(msg):
     if not check_subscription(msg.from_user.id):
         send_subscription_message(msg.chat.id)
         return
+    
+    user_files[msg.from_user.id] = []
+    
     bot.reply_to(msg, (
         "Возможности:\n\n"
         "🎨 PNG → BTX (сжатый, макс 512x512)\n"
         "🧩 OBJ → DFF\n"
         "📦 .dae / .jbeam → .obj + текстуры в ZIP\n\n"
+        "📂 Отправляйте файлы (можно много)\n"
+        "Затем нажмите ✅ Конвертировать в меню\n\n"
         "Канал: @brmodels095"
-    ))
+    ), reply_markup=get_menu_keyboard())
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_sub")
@@ -264,67 +294,132 @@ def check_sub_callback(call):
 
 @bot.message_handler(content_types=['document'])
 def handle_file(msg):
-    if not check_subscription(msg.from_user.id):
+    uid = msg.from_user.id
+    
+    if not check_subscription(uid):
         send_subscription_message(msg.chat.id)
         return
-    if msg.document.file_size > 50 * 1024 * 1024:
-        bot.reply_to(msg, "❌ Файл > 50 МБ")
+    
+    # Проверка общего размера
+    total_size = msg.document.file_size
+    if uid in user_files:
+        for fname in user_files[uid]:
+            if os.path.exists(fname):
+                total_size += os.path.getsize(fname)
+    
+    if total_size > 50 * 1024 * 1024:
+        bot.reply_to(msg, "❌ Общий размер файлов > 50 МБ")
         return
+    
+    # Скачиваем файл
     file_info = bot.get_file(msg.document.file_id)
     downloaded = bot.download_file(file_info.file_path)
     fname = msg.document.file_name
+    
+    # Если файл с таким именем уже есть, добавляем номер
+    base, ext = os.path.splitext(fname)
+    counter = 1
+    while fname in (user_files.get(uid, [])):
+        fname = f"{base}_{counter}{ext}"
+        counter += 1
+    
     with open(fname, 'wb') as f:
         f.write(downloaded)
-    user_files[msg.from_user.id] = fname
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("✅ Конвертировать", callback_data="convert"),
-        types.InlineKeyboardButton("❌ Отменить", callback_data="cancel")
-    )
-    bot.reply_to(msg, f"📁 {fname}", reply_markup=markup)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "convert")
-def convert_callback(call):
-    uid = call.from_user.id
+    
     if uid not in user_files:
-        bot.answer_callback_query(call.id, "Файл не найден", show_alert=True)
+        user_files[uid] = []
+    user_files[uid].append(fname)
+    
+    bot.reply_to(msg, f"📁 {fname} добавлен\nВсего файлов: {len(user_files[uid])}\n\nИспользуйте меню для действий:", reply_markup=get_menu_keyboard())
+
+
+@bot.message_handler(func=lambda msg: msg.text == "✅ Конвертировать")
+def convert_cmd(msg):
+    uid = msg.from_user.id
+    
+    if not check_subscription(uid):
+        send_subscription_message(msg.chat.id)
         return
-    fname = user_files[uid]
-    bot.answer_callback_query(call.id, "🚀 Конвертирую...")
-    bot.edit_message_text(f"🚀 {fname}...", call.message.chat.id, call.message.message_id)
-    try:
-        if fname.lower().endswith('.png'):
-            btx = converter._png_to_btx(fname)
-            with open(btx, 'rb') as f:
-                bot.send_document(call.message.chat.id, f, caption="✅ BTX")
-        elif fname.lower().endswith('.obj'):
-            dff = converter.obj_to_dff_only(fname)
-            if dff:
-                with open(dff, 'rb') as f:
-                    bot.send_document(call.message.chat.id, f, caption="✅ DFF")
-        elif fname.endswith(('.dae', '.jbeam')):
-            obj_file, zip_file = converter.beamng_full(fname)
-            if obj_file:
-                with open(obj_file, 'rb') as f:
-                    bot.send_document(call.message.chat.id, f, caption="✅ OBJ")
-            if zip_file:
-                with open(zip_file, 'rb') as f:
-                    bot.send_document(call.message.chat.id, f, caption="✅ Текстуры ZIP")
-        else:
-            bot.send_message(call.message.chat.id, f"❌ Формат: {fname}")
-    except Exception as e:
-        bot.send_message(call.message.chat.id, f"❌ Ошибка: {e}")
+    
+    if uid not in user_files or not user_files[uid]:
+        bot.reply_to(msg, "❌ Нет файлов. Отправьте файлы сначала.", reply_markup=get_menu_keyboard())
+        return
+    
+    files = user_files[uid]
+    bot.reply_to(msg, f"🚀 Конвертирую {len(files)} файлов...")
+    
+    for fname in files:
+        try:
+            if fname.lower().endswith('.png'):
+                btx = converter._png_to_btx(fname)
+                with open(btx, 'rb') as f:
+                    bot.send_document(uid, f, caption=f"✅ {Path(btx).name}")
+                    
+            elif fname.lower().endswith('.obj'):
+                dff = converter.obj_to_dff_only(fname)
+                if dff:
+                    with open(dff, 'rb') as f:
+                        bot.send_document(uid, f, caption=f"✅ {Path(dff).name}")
+                else:
+                    bot.send_message(uid, f"❌ Не удалось: {fname}")
+                    
+            elif fname.endswith(('.dae', '.jbeam')):
+                obj_file, zip_file = converter.beamng_full(fname)
+                if obj_file:
+                    with open(obj_file, 'rb') as f:
+                        bot.send_document(uid, f, caption="✅ OBJ модель")
+                if zip_file:
+                    with open(zip_file, 'rb') as f:
+                        bot.send_document(uid, f, caption="✅ Текстуры ZIP")
+                if not obj_file and not zip_file:
+                    bot.send_message(uid, f"❌ Не удалось: {fname}")
+        except Exception as e:
+            bot.send_message(uid, f"❌ Ошибка в {fname}: {e}")
+    
+    # Очищаем список
+    user_files[uid] = []
+    bot.send_message(uid, "✅ Готово! Отправьте новые файлы.", reply_markup=get_menu_keyboard())
+
+
+@bot.message_handler(func=lambda msg: msg.text == "❌ Отменить")
+def cancel_cmd(msg):
+    uid = msg.from_user.id
     if uid in user_files:
-        del user_files[uid]
+        # Удаляем файлы
+        for fname in user_files[uid]:
+            if os.path.exists(fname):
+                os.remove(fname)
+        user_files[uid] = []
+    bot.reply_to(msg, "❌ Все файлы удалены. Отправьте новые.", reply_markup=get_menu_keyboard())
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "cancel")
-def cancel_callback(call):
-    if call.from_user.id in user_files:
-        del user_files[call.from_user.id]
-    bot.answer_callback_query(call.id, "❌ Отменено")
-    bot.edit_message_text("❌ Отменено.", call.message.chat.id, call.message.message_id)
+@bot.message_handler(func=lambda msg: msg.text == "📋 Список файлов")
+def list_cmd(msg):
+    uid = msg.from_user.id
+    if uid not in user_files or not user_files[uid]:
+        bot.reply_to(msg, "📋 Нет загруженных файлов.", reply_markup=get_menu_keyboard())
+        return
+    
+    text = "📋 Загруженные файлы:\n"
+    total = 0
+    for fname in user_files[uid]:
+        if os.path.exists(fname):
+            size = os.path.getsize(fname)
+            total += size
+            text += f"• {fname} ({size // 1024} КБ)\n"
+    text += f"\nВсего: {len(user_files[uid])} файлов, {total // 1024} КБ"
+    bot.reply_to(msg, text, reply_markup=get_menu_keyboard())
+
+
+@bot.message_handler(func=lambda msg: msg.text == "🗑 Очистить")
+def clear_cmd(msg):
+    uid = msg.from_user.id
+    if uid in user_files:
+        for fname in user_files[uid]:
+            if os.path.exists(fname):
+                os.remove(fname)
+        user_files[uid] = []
+    bot.reply_to(msg, "🗑 Очищено. Отправьте новые файлы.", reply_markup=get_menu_keyboard())
 
 
 @bot.message_handler(func=lambda msg: True)
@@ -332,7 +427,7 @@ def any_msg(msg):
     if not check_subscription(msg.from_user.id):
         send_subscription_message(msg.chat.id)
         return
-    bot.reply_to(msg, "Отправьте файл или /start")
+    bot.reply_to(msg, "Используйте меню или отправьте файлы.", reply_markup=get_menu_keyboard())
 
 
 print("[>] Бот запущен")
