@@ -17,6 +17,69 @@ CHANNEL_URL = "https://t.me/brmodels095"
 bot = telebot.TeleBot(TOKEN)
 user_files = {}
 
+def analyze_obj(file_path):
+    """AI-анализ OBJ файла для ZModeler"""
+    try:
+        verts = 0
+        faces = 0
+        uvs = 0
+        size_kb = os.path.getsize(file_path) // 1024
+        
+        with open(file_path, 'r') as f:
+            for line in f:
+                if line.startswith('v '): verts += 1
+                elif line.startswith('vt '): uvs += 1
+                elif line.startswith('f '): faces += 1
+        
+        # Анализ совместимости
+        issues = []
+        warnings = []
+        
+        if verts > 65535:
+            issues.append("⚠️ Более 65535 вершин — ZModeler может крашнуться")
+        elif verts > 20000:
+            warnings.append("⚡ Модель тяжёлая (>20K вершин) — возможны лаги")
+        
+        if uvs == 0:
+            warnings.append("🖌 Нет UV-развёртки — текстуры не наложатся")
+        
+        if faces > 50000:
+            issues.append("⚠️ Слишком много полигонов — высокий шанс краша")
+        
+        if size_kb > 10000:
+            warnings.append("📦 Файл большой (>10 МБ) — может долго грузиться")
+        
+        # Итоговая оценка
+        if issues:
+            verdict = "❌ Скорее всего не откроется в ZModeler"
+        elif warnings:
+            verdict = "⚠️ Может работать с ограничениями"
+        else:
+            verdict = "✅ Должен открыться без проблем"
+        
+        return {
+            'verts': verts,
+            'faces': faces,
+            'uvs': uvs,
+            'size_kb': size_kb,
+            'issues': issues,
+            'warnings': warnings,
+            'verdict': verdict
+        }
+    except:
+        return None
+
+def analyze_dae(file_path):
+    """Анализ DAE файла"""
+    try:
+        size_kb = os.path.getsize(file_path) // 1024
+        return {
+            'size_kb': size_kb,
+            'verdict': '📦 DAE файл — будет конвертирован в OBJ'
+        }
+    except:
+        return None
+
 class FullModelConverter:
     def __init__(self):
         self.output_dir = Path("converted_output")
@@ -219,7 +282,7 @@ def send_subscription_message(chat_id):
         types.InlineKeyboardButton("📢 Подписаться", url=CHANNEL_URL),
         types.InlineKeyboardButton("✅ Проверить подписку", callback_data="check_sub")
     )
-    bot.send_message(chat_id, "Подпишитесь чтобы пользоваться ботом\n\n" + CHANNEL_URL, reply_markup=markup)
+    bot.send_message(chat_id, "🔒 Подпишитесь чтобы пользоваться ботом\n\n" + CHANNEL_URL, reply_markup=markup)
 
 
 def get_menu_keyboard():
@@ -228,7 +291,8 @@ def get_menu_keyboard():
         types.KeyboardButton("✅ Конвертировать"),
         types.KeyboardButton("❌ Отменить"),
         types.KeyboardButton("📋 Список файлов"),
-        types.KeyboardButton("🗑 Очистить")
+        types.KeyboardButton("🗑 Очистить"),
+        types.KeyboardButton("🔍 Анализ файла")
     )
     return markup
 
@@ -245,9 +309,10 @@ def start(msg):
         "Возможности:\n\n"
         "🎨 PNG → BTX (сжатый, макс 512x512)\n"
         "📦 .dae / .jbeam → .obj + текстуры в ZIP\n"
-        "🧩 OBJ → остаётся OBJ (в ZModeler сам экспортируй в DFF)\n\n"
+        "🧩 OBJ → остаётся OBJ (в ZModeler сам экспортируй в DFF)\n"
+        "🔍 AI-анализ — проверь откроется ли файл в ZModeler\n\n"
         "📂 Отправляйте файлы (можно много)\n"
-        "Затем нажмите ✅ Конвертировать в меню\n\n"
+        "Затем нажмите ✅ Конвертировать или 🔍 Анализ в меню\n\n"
         "Канал: @brmodels095"
     ), reply_markup=get_menu_keyboard())
 
@@ -297,7 +362,76 @@ def handle_file(msg):
         user_files[uid] = []
     user_files[uid].append(fname)
 
-    bot.reply_to(msg, f"📁 {fname} добавлен\nВсего файлов: {len(user_files[uid])}\n\nИспользуйте меню для действий:", reply_markup=get_menu_keyboard())
+    # Авто-анализ при добавлении файла
+    analysis_text = ""
+    if fname.lower().endswith('.obj'):
+        info = analyze_obj(fname)
+        if info:
+            analysis_text = (
+                f"\n\n🔍 *AI-анализ:*\n"
+                f"• Вершин: {info['verts']}\n"
+                f"• Полигонов: {info['faces']}\n"
+                f"• UV-координат: {info['uvs']}\n"
+                f"• Размер: {info['size_kb']} КБ\n"
+                f"• Вердикт: {info['verdict']}"
+            )
+    elif fname.lower().endswith('.dae'):
+        info = analyze_dae(fname)
+        if info:
+            analysis_text = (
+                f"\n\n🔍 *AI-анализ:*\n"
+                f"• Размер: {info['size_kb']} КБ\n"
+                f"• Вердикт: {info['verdict']}"
+            )
+
+    bot.reply_to(msg, 
+        f"📁 {fname} добавлен\nВсего файлов: {len(user_files[uid])}{analysis_text}\n\nИспользуйте меню для действий:", 
+        reply_markup=get_menu_keyboard(),
+        parse_mode="Markdown"
+    )
+
+
+@bot.message_handler(func=lambda msg: msg.text == "🔍 Анализ файла")
+def analyze_cmd(msg):
+    uid = msg.from_user.id
+
+    if uid not in user_files or not user_files[uid]:
+        bot.reply_to(msg, "❌ Нет файлов для анализа. Отправьте файлы сначала.", reply_markup=get_menu_keyboard())
+        return
+
+    files = user_files[uid]
+    for fname in files:
+        if fname.lower().endswith('.obj'):
+            info = analyze_obj(fname)
+            if info:
+                text = (
+                    f"🔍 *AI-анализ: {fname}*\n\n"
+                    f"📊 *Статистика:*\n"
+                    f"• Вершин: {info['verts']}\n"
+                    f"• Полигонов: {info['faces']}\n"
+                    f"• UV-координат: {info['uvs']}\n"
+                    f"• Размер: {info['size_kb']} КБ\n\n"
+                    f"📋 *Вердикт ZModeler:*\n{info['verdict']}\n"
+                )
+                if info['issues']:
+                    text += f"\n⚠️ *Проблемы:*\n" + "\n".join(info['issues'])
+                if info['warnings']:
+                    text += f"\n💡 *Замечания:*\n" + "\n".join(info['warnings'])
+                text += "\n\n📌 *Рекомендация:*\n"
+                if info['verts'] > 65535:
+                    text += "• Упрости модель (уменьши количество вершин)\n"
+                if info['uvs'] == 0:
+                    text += "• Добавь UV-развёртку перед конвертацией\n"
+                if not info['issues']:
+                    text += "• Можно смело импортировать в ZModeler\n"
+                    text += "• File → Import → выбери этот .obj\n"
+                    text += "• File → Export → DFF (GTA SA)\n"
+                
+                bot.reply_to(msg, text, parse_mode="Markdown")
+            else:
+                bot.reply_to(msg, f"❌ Не удалось проанализировать {fname}")
+        else:
+            bot.reply_to(msg, f"🔍 {fname} — анализ доступен только для .obj файлов")
 
 
 @bot.message_handler(func=lambda msg: msg.text == "✅ Конвертировать")
