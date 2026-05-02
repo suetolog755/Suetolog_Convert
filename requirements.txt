@@ -4,3 +4,4 @@ Pillow
 pyglm
 rwfury
 pytelegrambotapi
+pycollada
