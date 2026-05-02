@@ -18,7 +18,7 @@ bot = telebot.TeleBot(TOKEN)
 user_files = {}
 
 def analyze_obj(file_path):
-    """AI-анализ OBJ файла для ZModeler"""
+    """Анализ OBJ файла на совместимость с ZModeler Android"""
     try:
         verts = 0
         faces = 0
@@ -31,14 +31,13 @@ def analyze_obj(file_path):
                 elif line.startswith('vt '): uvs += 1
                 elif line.startswith('f '): faces += 1
         
-        # Анализ совместимости
         issues = []
         warnings = []
         
         if verts > 65535:
-            issues.append("⚠️ Более 65535 вершин — ZModeler может крашнуться")
-        elif verts > 20000:
-            warnings.append("⚡ Модель тяжёлая (>20K вершин) — возможны лаги")
+            issues.append("⚠️ Более 65535 вершин — ZModeler крашнется")
+        elif verts > 40000:
+            warnings.append("⚡ Модель тяжёлая (>40K вершин) — возможны лаги")
         
         if uvs == 0:
             warnings.append("🖌 Нет UV-развёртки — текстуры не наложатся")
@@ -49,9 +48,8 @@ def analyze_obj(file_path):
         if size_kb > 10000:
             warnings.append("📦 Файл большой (>10 МБ) — может долго грузиться")
         
-        # Итоговая оценка
         if issues:
-            verdict = "❌ Скорее всего не откроется в ZModeler"
+            verdict = "❌ Скорее всего не откроется"
         elif warnings:
             verdict = "⚠️ Может работать с ограничениями"
         else:
@@ -69,16 +67,6 @@ def analyze_obj(file_path):
     except:
         return None
 
-def analyze_dae(file_path):
-    """Анализ DAE файла"""
-    try:
-        size_kb = os.path.getsize(file_path) // 1024
-        return {
-            'size_kb': size_kb,
-            'verdict': '📦 DAE файл — будет конвертирован в OBJ'
-        }
-    except:
-        return None
 
 class FullModelConverter:
     def __init__(self):
@@ -93,6 +81,7 @@ class FullModelConverter:
         self.temp_dir.mkdir(exist_ok=True, parents=True)
 
     def _dae_to_obj(self, dae_path):
+        """Конвертирует DAE в OBJ с авто-упрощением для ZModeler"""
         tree = ET.parse(dae_path)
         root = tree.getroot()
         ns = 'http://www.collada.org/2005/11/COLLADASchema'
@@ -124,13 +113,42 @@ class FullModelConverter:
                         if i + 2 < len(indices):
                             faces.append([indices[i]+1, indices[i+1]+1, indices[i+2]+1])
 
+        # Авто-упрощение: если вершин больше 60000, прореживаем
+        max_verts = 60000
+        if len(vertices) > max_verts:
+            keep_ratio = max_verts / len(vertices)
+            step = max(1, int(1.0 / keep_ratio))
+            
+            new_vertices = []
+            new_uvs = []
+            new_faces = []
+            old_to_new = {}
+            
+            for i in range(0, len(vertices), step):
+                old_to_new[i] = len(new_vertices)
+                new_vertices.append(vertices[i])
+                if i < len(uvs):
+                    new_uvs.append(uvs[i])
+            
+            for face in faces:
+                if all(v in old_to_new for v in face):
+                    new_faces.append([old_to_new[v] for v in face])
+            
+            vertices = new_vertices
+            uvs = new_uvs
+            faces = new_faces
+
+        # Заполняем UV если их не хватает
+        while len(uvs) < len(vertices):
+            uvs.append([0.0, 0.0])
+
         with open(obj_path, 'w') as f:
             for v in vertices:
                 f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
             for vt in uvs:
                 f.write(f"vt {vt[0]:.6f} {vt[1]:.6f}\n")
             for face in faces:
-                f.write(f"f {face[0]} {face[1]} {face[2]}\n")
+                f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
         return obj_path
 
     def _parse_jbeam(self, jbeam_path):
@@ -178,18 +196,23 @@ class FullModelConverter:
             return None
 
     def _png_to_btx(self, png_path, output_name=None):
+        """Конвертирует PNG в BTX без альфа-канала, сжатый, макс 512x512"""
         png_file = Path(png_path)
         if output_name is None:
             output_name = png_file.stem
         btx_path = self.output_dir / f"{output_name}.btx"
+        
         img = Image.open(png_file).convert("RGB")
+        
         max_size = 512
         if img.width > max_size or img.height > max_size:
             img.thumbnail((max_size, max_size), Image.LANCZOS)
+        
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=70)
         buf.seek(0)
         compressed = Image.open(buf).convert("RGB")
+        
         with open(btx_path, 'wb') as f:
             f.write(b'BTX\x00')
             f.write(compressed.width.to_bytes(2, 'little'))
@@ -309,10 +332,10 @@ def start(msg):
         "Возможности:\n\n"
         "🎨 PNG → BTX (сжатый, макс 512x512)\n"
         "📦 .dae / .jbeam → .obj + текстуры в ZIP\n"
-        "🧩 OBJ → остаётся OBJ (в ZModeler сам экспортируй в DFF)\n"
-        "🔍 AI-анализ — проверь откроется ли файл в ZModeler\n\n"
+        "🧩 OBJ → авто-упрощение для ZModeler\n"
+        "🔍 AI-анализ совместимости\n\n"
         "📂 Отправляйте файлы (можно много)\n"
-        "Затем нажмите ✅ Конвертировать или 🔍 Анализ в меню\n\n"
+        "Затем нажмите ✅ Конвертировать в меню\n\n"
         "Канал: @brmodels095"
     ), reply_markup=get_menu_keyboard())
 
@@ -362,7 +385,6 @@ def handle_file(msg):
         user_files[uid] = []
     user_files[uid].append(fname)
 
-    # Авто-анализ при добавлении файла
     analysis_text = ""
     if fname.lower().endswith('.obj'):
         info = analyze_obj(fname)
@@ -371,21 +393,13 @@ def handle_file(msg):
                 f"\n\n🔍 *AI-анализ:*\n"
                 f"• Вершин: {info['verts']}\n"
                 f"• Полигонов: {info['faces']}\n"
-                f"• UV-координат: {info['uvs']}\n"
-                f"• Размер: {info['size_kb']} КБ\n"
-                f"• Вердикт: {info['verdict']}"
-            )
-    elif fname.lower().endswith('.dae'):
-        info = analyze_dae(fname)
-        if info:
-            analysis_text = (
-                f"\n\n🔍 *AI-анализ:*\n"
+                f"• UV: {info['uvs']}\n"
                 f"• Размер: {info['size_kb']} КБ\n"
                 f"• Вердикт: {info['verdict']}"
             )
 
     bot.reply_to(msg, 
-        f"📁 {fname} добавлен\nВсего файлов: {len(user_files[uid])}{analysis_text}\n\nИспользуйте меню для действий:", 
+        f"📁 {fname} добавлен\nВсего файлов: {len(user_files[uid])}{analysis_text}\n\nИспользуйте меню:", 
         reply_markup=get_menu_keyboard(),
         parse_mode="Markdown"
     )
@@ -394,9 +408,8 @@ def handle_file(msg):
 @bot.message_handler(func=lambda msg: msg.text == "🔍 Анализ файла")
 def analyze_cmd(msg):
     uid = msg.from_user.id
-
     if uid not in user_files or not user_files[uid]:
-        bot.reply_to(msg, "❌ Нет файлов для анализа. Отправьте файлы сначала.", reply_markup=get_menu_keyboard())
+        bot.reply_to(msg, "❌ Нет файлов для анализа.", reply_markup=get_menu_keyboard())
         return
 
     files = user_files[uid]
@@ -405,11 +418,11 @@ def analyze_cmd(msg):
             info = analyze_obj(fname)
             if info:
                 text = (
-                    f"🔍 *AI-анализ: {fname}*\n\n"
+                    f"🔍 *Анализ: {fname}*\n\n"
                     f"📊 *Статистика:*\n"
                     f"• Вершин: {info['verts']}\n"
                     f"• Полигонов: {info['faces']}\n"
-                    f"• UV-координат: {info['uvs']}\n"
+                    f"• UV: {info['uvs']}\n"
                     f"• Размер: {info['size_kb']} КБ\n\n"
                     f"📋 *Вердикт ZModeler:*\n{info['verdict']}\n"
                 )
@@ -419,19 +432,14 @@ def analyze_cmd(msg):
                     text += f"\n💡 *Замечания:*\n" + "\n".join(info['warnings'])
                 text += "\n\n📌 *Рекомендация:*\n"
                 if info['verts'] > 65535:
-                    text += "• Упрости модель (уменьши количество вершин)\n"
+                    text += "• Упрости модель (< 65K вершин)\n"
                 if info['uvs'] == 0:
-                    text += "• Добавь UV-развёртку перед конвертацией\n"
+                    text += "• Добавь UV-развёртку\n"
                 if not info['issues']:
-                    text += "• Можно смело импортировать в ZModeler\n"
-                    text += "• File → Import → выбери этот .obj\n"
+                    text += "• Можно импортировать в ZModeler\n"
+                    text += "• File → Import → выбери .obj\n"
                     text += "• File → Export → DFF (GTA SA)\n"
-                
                 bot.reply_to(msg, text, parse_mode="Markdown")
-            else:
-                bot.reply_to(msg, f"❌ Не удалось проанализировать {fname}")
-        else:
-            bot.reply_to(msg, f"🔍 {fname} — анализ доступен только для .obj файлов")
 
 
 @bot.message_handler(func=lambda msg: msg.text == "✅ Конвертировать")
@@ -443,7 +451,7 @@ def convert_cmd(msg):
         return
 
     if uid not in user_files or not user_files[uid]:
-        bot.reply_to(msg, "❌ Нет файлов. Отправьте файлы сначала.", reply_markup=get_menu_keyboard())
+        bot.reply_to(msg, "❌ Нет файлов.", reply_markup=get_menu_keyboard())
         return
 
     files = user_files[uid]
@@ -460,12 +468,12 @@ def convert_cmd(msg):
                 with open(fname, 'rb') as f:
                     bot.send_document(uid, f, caption="✅ OBJ модель")
                 bot.send_message(uid, (
-                    "📌 Что делать с OBJ:\n"
+                    "📌 *Что делать с OBJ:*\n"
                     "1. Открой ZModeler\n"
-                    "2. File → Import — выбери этот .obj\n"
-                    "3. File → Export — выбери DFF (GTA SA)\n"
+                    "2. *File → Import* — выбери этот .obj\n"
+                    "3. *File → Export* — выбери DFF (GTA SA)\n"
                     "4. Сохрани — готово!"
-                ))
+                ), parse_mode="Markdown")
 
             elif fname.endswith(('.dae', '.jbeam')):
                 obj_file, zip_file = converter.beamng_full(fname)
@@ -477,6 +485,7 @@ def convert_cmd(msg):
                         bot.send_document(uid, f, caption="✅ Текстуры ZIP")
                 if not obj_file and not zip_file:
                     bot.send_message(uid, f"❌ Не удалось: {fname}")
+                    
         except Exception as e:
             bot.send_message(uid, f"❌ Ошибка в {fname}: {e}")
 
@@ -492,7 +501,7 @@ def cancel_cmd(msg):
             if os.path.exists(fname):
                 os.remove(fname)
         user_files[uid] = []
-    bot.reply_to(msg, "❌ Все файлы удалены. Отправьте новые.", reply_markup=get_menu_keyboard())
+    bot.reply_to(msg, "❌ Все файлы удалены.", reply_markup=get_menu_keyboard())
 
 
 @bot.message_handler(func=lambda msg: msg.text == "📋 Список файлов")
@@ -502,7 +511,7 @@ def list_cmd(msg):
         bot.reply_to(msg, "📋 Нет загруженных файлов.", reply_markup=get_menu_keyboard())
         return
 
-    text = "📋 Загруженные файлы:\n"
+    text = "📋 *Загруженные файлы:*\n"
     total = 0
     for fname in user_files[uid]:
         if os.path.exists(fname):
@@ -510,7 +519,7 @@ def list_cmd(msg):
             total += size
             text += f"• {fname} ({size // 1024} КБ)\n"
     text += f"\nВсего: {len(user_files[uid])} файлов, {total // 1024} КБ"
-    bot.reply_to(msg, text, reply_markup=get_menu_keyboard())
+    bot.reply_to(msg, text, parse_mode="Markdown", reply_markup=get_menu_keyboard())
 
 
 @bot.message_handler(func=lambda msg: msg.text == "🗑 Очистить")
@@ -521,7 +530,7 @@ def clear_cmd(msg):
             if os.path.exists(fname):
                 os.remove(fname)
         user_files[uid] = []
-    bot.reply_to(msg, "🗑 Очищено. Отправьте новые файлы.", reply_markup=get_menu_keyboard())
+    bot.reply_to(msg, "🗑 Очищено.", reply_markup=get_menu_keyboard())
 
 
 @bot.message_handler(func=lambda msg: True)
