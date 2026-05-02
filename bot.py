@@ -9,7 +9,10 @@ from pathlib import Path
 from PIL import Image
 import telebot
 from telebot import types
-from config import TOKEN, CHANNEL_ID, CHANNEL_URL
+
+TOKEN = "8613630902:AAG40R1_fFUUvS1a8VFFf1WaWSCc9mFf1lQ"
+CHANNEL_ID = "@brmodels095"
+CHANNEL_URL = "https://t.me/brmodels095"
 
 bot = telebot.TeleBot(TOKEN)
 user_files = {}
@@ -216,7 +219,7 @@ def send_subscription_message(chat_id):
         types.InlineKeyboardButton("📢 Подписаться", url=CHANNEL_URL),
         types.InlineKeyboardButton("✅ Проверить подписку", callback_data="check_sub")
     )
-    bot.send_message(chat_id, "🔒 Подпишитесь чтобы пользоваться ботом\n\n" + CHANNEL_URL, reply_markup=markup)
+    bot.send_message(chat_id, "Подпишитесь чтобы пользоваться ботом\n\n" + CHANNEL_URL, reply_markup=markup)
 
 
 def get_menu_keyboard():
