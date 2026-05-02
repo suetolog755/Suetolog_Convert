@@ -1,7 +1,5 @@
-trimesh
 numpy
 Pillow
 pyglm
 rwfury
 pytelegrambotapi
-pycollada
