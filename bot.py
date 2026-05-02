@@ -52,49 +52,41 @@ def analyze_file(file_path):
             except:
                 pass
         
-        elif ext == '.dff':
-            # DFF — просто показываем что формат поддерживается
-            pass
-        
-        elif ext == '.3ds':
-            pass
-        
-        # Вердикт на основе формата
         issues = []
         warnings = []
-        import_support = "✅ Поддерживается"
+        import_support = "Поддерживается"
         needs_fix = False
         
         if ext == '.dae':
-            import_support = "❌ Не поддерживается"
+            import_support = "Не поддерживается"
             needs_fix = True
         
         if verts > 0:
             if verts > 65535:
-                issues.append(f"⚠️ {verts} вершин > 65535 — краш ZModeler")
+                issues.append(f"Вершин: {verts} (больше 65535) - краш ZModeler")
                 needs_fix = True
             elif verts > 40000:
-                warnings.append(f"⚡ {verts} вершин — возможны лаги")
+                warnings.append(f"Вершин: {verts} - возможны лаги")
         
         if faces > 50000:
-            issues.append(f"⚠️ {faces} полигонов — краш ZModeler")
+            issues.append(f"Полигонов: {faces} - краш ZModeler")
             needs_fix = True
         
         if size_kb > 10000:
-            warnings.append(f"📦 {size_kb} КБ — может долго грузиться")
+            warnings.append(f"Размер: {size_kb} КБ - может долго грузиться")
         
         if issues:
-            verdict = "❌ Требуется конвертация"
+            verdict = "Требуется конвертация"
         elif needs_fix:
-            verdict = "⚠️ Рекомендуется конвертация"
+            verdict = "Рекомендуется конвертация"
         elif warnings:
-            verdict = "⚠️ Может работать с ограничениями"
+            verdict = "Может работать с ограничениями"
         elif ext in ['.dff', '.3ds']:
-            verdict = "✅ Не нуждается в конвертации"
+            verdict = "Не нуждается в конвертации"
         elif verts > 0:
-            verdict = "✅ Не нуждается в конвертации"
+            verdict = "Не нуждается в конвертации"
         else:
-            verdict = "📦 Проанализирован"
+            verdict = "Проанализирован"
         
         return {
             'ext': ext, 'verts': verts, 'faces': faces, 'uvs': uvs,
@@ -112,16 +104,16 @@ def get_advisor_tips(info):
     verts = info['verts']
     
     if ext == '.dae':
-        tips.append("💡 ZModeler не открывает .dae. Нажми ✅ Конвертировать.")
+        tips.append("ZModeler не открывает .dae. Нажми Конвертировать.")
     elif ext == '.dff':
-        tips.append("✅ DFF открывается в ZModeler.")
+        tips.append("DFF открывается в ZModeler.")
     elif ext == '.3ds':
-        tips.append("💡 3DS открывается. После импорта проверь текстуры.")
+        tips.append("3DS открывается. После импорта проверь текстуры.")
     elif ext == '.obj' and verts <= 65535:
-        tips.append("✅ Файл готов к импорту в ZModeler.")
+        tips.append("Файл готов к импорту в ZModeler.")
     
     if verts > 65535:
-        tips.append("⚠️ Лимит 65K вершин. Нажми ✅ Конвертировать.")
+        tips.append("Лимит 65K вершин. Нажми Конвертировать.")
     
     return tips
 
@@ -164,7 +156,6 @@ class FullModelConverter:
         return new_vertices, new_uvs, new_faces
 
     def _dae_to_obj(self, dae_path):
-        """DAE → OBJ с упрощением"""
         try:
             tree = ET.parse(dae_path)
             root = tree.getroot()
@@ -220,7 +211,6 @@ class FullModelConverter:
             return None
 
     def _obj_simplify(self, obj_path):
-        """Упрощает OBJ"""
         vertices, uvs, faces = [], [], []
         
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -311,7 +301,6 @@ class FullModelConverter:
         return zip_path
 
     def dae_to_obj(self, dae_path):
-        """DAE → OBJ + текстуры ZIP"""
         self._clean_temp()
         inp = Path(dae_path)
         obj_path = self._dae_to_obj(inp)
@@ -399,29 +388,28 @@ def handle_file(msg):
     downloaded = bot.download_file(file_info.file_path)
     fname = msg.document.file_name
 
-    # Сохраняем файл
     save_path = os.path.join(os.getcwd(), fname)
     with open(save_path, 'wb') as f:
         f.write(downloaded)
 
-    # Инициализируем список
     if uid not in user_files:
         user_files[uid] = []
     user_files[uid].append(save_path)
 
-    # Анализ
     info = analyze_file(save_path)
     analysis_text = ""
     if info:
-        analysis_text = f"\n\n🔍 *AI-анализ ({info['ext']}):*\n"
-        if info['verts'] > 0:
-            analysis_text += f"• Вершин: {info['verts']}\n• Полигонов: {info['faces']}\n"
-        analysis_text += f"• Размер: {info['size_kb']} КБ\n• Вердикт: {info['verdict']}"
+        analysis_text = (
+            f"\n\nAI-анализ ({info['ext']}):\n"
+            f"• Вершин: {info['verts']}\n"
+            f"• Полигонов: {info['faces']}\n"
+            f"• Размер: {info['size_kb']} КБ\n"
+            f"• Вердикт: {info['verdict']}"
+        )
 
     bot.reply_to(msg,
-        f"📁 {fname} добавлен\nВсего: {len(user_files[uid])}{analysis_text}\n\nИспользуйте меню:",
-        reply_markup=get_menu_keyboard(),
-        parse_mode="Markdown"
+        f"Файл {fname} добавлен\nВсего: {len(user_files[uid])}{analysis_text}\n\nИспользуйте меню:",
+        reply_markup=get_menu_keyboard()
     )
 
 
@@ -429,7 +417,7 @@ def handle_file(msg):
 def analyze_cmd(msg):
     uid = msg.from_user.id
     if uid not in user_files or not user_files[uid]:
-        bot.reply_to(msg, "❌ Нет файлов.", reply_markup=get_menu_keyboard())
+        bot.reply_to(msg, "Нет файлов.", reply_markup=get_menu_keyboard())
         return
 
     for fpath in user_files[uid]:
@@ -438,26 +426,27 @@ def analyze_cmd(msg):
         info = analyze_file(fpath)
         if info:
             fname = os.path.basename(fpath)
-            text = f"🔍 *Анализ: {fname}*\n\n"
+            text = f"Анализ: {fname}\n\n"
             if info['verts'] > 0:
-                text += f"📊 *Статистика:*\n• Вершин: {info['verts']}\n• Полигонов: {info['faces']}\n"
-            text += f"• Размер: {info['size_kb']} КБ\n• Формат: {info['ext']}\n\n"
-            text += f"📥 *Импорт в ZModeler:* {info['import_support']}\n"
-            text += f"📋 *Вердикт:* {info['verdict']}\n"
+                text += f"Статистика:\n• Вершин: {info['verts']}\n• Полигонов: {info['faces']}\n"
+            text += f"• Размер: {info['size_kb']} КБ\n"
+            text += f"• Формат: {info['ext']}\n\n"
+            text += f"Импорт в ZModeler: {info['import_support']}\n"
+            text += f"Вердикт: {info['verdict']}\n"
             
             tips = get_advisor_tips(info)
             if tips:
-                text += "\n🧠 *Советник:*\n" + "\n".join(tips)
+                text += "\nСоветник:\n" + "\n".join(tips)
             if info['issues']:
-                text += f"\n⚠️ *Проблемы:*\n" + "\n".join(info['issues'])
+                text += "\nПроблемы:\n" + "\n".join(info['issues'])
             
-            text += "\n\n📌 *Рекомендация:*\n"
-            if info['verdict'] == "✅ Не нуждается в конвертации":
+            text += "\n\nРекомендация:\n"
+            if info['verdict'] == "Не нуждается в конвертации":
                 text += "• Этот файл уже готов для ZModeler. Конвертация не требуется."
             elif info['needs_fix']:
-                text += "• Нажми ✅ Конвертировать — бот исправит файл."
+                text += "• Нажми Конвертировать — бот исправит файл."
             
-            bot.reply_to(msg, text, parse_mode="Markdown")
+            bot.reply_to(msg, text)
 
 
 @bot.message_handler(func=lambda msg: msg.text == "✅ Конвертировать")
@@ -465,26 +454,25 @@ def convert_cmd(msg):
     uid = msg.from_user.id
     
     if uid not in user_files or len(user_files[uid]) == 0:
-        bot.reply_to(msg, "❌ Нет файлов. Отправьте файлы сначала.", reply_markup=get_menu_keyboard())
+        bot.reply_to(msg, "Нет файлов. Отправьте файлы сначала.", reply_markup=get_menu_keyboard())
         return
 
     files = list(user_files[uid])
     user_files[uid] = []
     
-    bot.reply_to(msg, f"🚀 Конвертирую {len(files)} файлов...")
+    bot.reply_to(msg, f"Конвертирую {len(files)} файлов...")
 
     for fpath in files:
         try:
             if not os.path.exists(fpath):
-                bot.send_message(uid, f"❌ Файл не найден")
+                bot.send_message(uid, "Файл не найден")
                 continue
             
             fname = os.path.basename(fpath)
             info = analyze_file(fpath)
             ext = Path(fpath).suffix.lower()
             
-            # Проверяем — нужна ли конвертация
-            if info and info['verdict'] == "✅ Не нуждается в конвертации":
+            if info and info['verdict'] == "Не нуждается в конвертации":
                 bot.send_message(uid, f"✅ {fname} — не нуждается в конвертации. Готово для ZModeler.")
                 continue
                 
@@ -492,25 +480,24 @@ def convert_cmd(msg):
                 btx = converter._png_to_btx(fpath)
                 if btx:
                     with open(btx, 'rb') as f:
-                        bot.send_document(uid, f, caption=f"✅ {Path(btx).name}")
+                        bot.send_document(uid, f, caption=f"BTX: {Path(btx).name}")
 
             elif ext == '.dae':
-                bot.send_message(uid, f"⏳ Конвертирую DAE → OBJ...")
+                bot.send_message(uid, f"Конвертирую DAE в OBJ...")
                 obj_file, zip_file = converter.dae_to_obj(fpath)
                 if obj_file:
                     with open(obj_file, 'rb') as f:
-                        bot.send_document(uid, f, caption=f"✅ OBJ (из DAE)")
+                        bot.send_document(uid, f, caption="OBJ (из DAE)")
                     new_info = analyze_file(str(obj_file))
                     if new_info:
-                        bot.send_message(uid, f"🔍 После: {new_info['verts']} вершин\n📋 {new_info['verdict']}", parse_mode="Markdown")
+                        bot.send_message(uid, f"После конвертации: {new_info['verts']} вершин\nВердикт: {new_info['verdict']}")
                 if zip_file:
                     with open(zip_file, 'rb') as f:
-                        bot.send_document(uid, f, caption="✅ Текстуры ZIP")
+                        bot.send_document(uid, f, caption="Текстуры ZIP")
                 if not obj_file:
-                    bot.send_message(uid, f"❌ Не удалось: {fname}")
+                    bot.send_message(uid, f"Не удалось конвертировать: {fname}")
 
             elif ext == '.dff':
-                # DFF просто пересылаем
                 bot.send_message(uid, f"✅ {fname} — DFF файл. ZModeler его открывает. Конвертация не требуется.")
 
             elif ext == '.3ds':
@@ -518,26 +505,24 @@ def convert_cmd(msg):
 
             elif ext == '.obj':
                 if info and info['verts'] > 60000:
-                    bot.send_message(uid, f"⏳ Упрощаю OBJ ({info['verts']} вершин)...")
+                    bot.send_message(uid, f"Упрощаю OBJ ({info['verts']} вершин)...")
                     simplified = converter._obj_simplify(fpath)
                     if simplified:
                         with open(simplified, 'rb') as f:
-                            bot.send_document(uid, f, caption=f"✅ OBJ (упрощён)")
+                            bot.send_document(uid, f, caption="OBJ (упрощён)")
                         new_info = analyze_file(str(simplified))
                         if new_info:
-                            bot.send_message(uid, 
-                                f"📊 До: {info['verts']}\n📊 После: {new_info['verts']}",
-                                parse_mode="Markdown")
+                            bot.send_message(uid, f"До: {info['verts']} вершин\nПосле: {new_info['verts']} вершин")
                 else:
                     bot.send_message(uid, f"✅ {fname} — OBJ в порядке, конвертация не требуется.")
 
             else:
-                bot.send_message(uid, f"❌ Формат не поддерживается: {fname}")
+                bot.send_message(uid, f"Формат не поддерживается: {fname}")
                 
         except Exception as e:
-            bot.send_message(uid, f"❌ Ошибка: {str(e)[:100]}")
+            bot.send_message(uid, f"Ошибка: {str(e)[:100]}")
 
-    bot.send_message(uid, "✅ Готово!", reply_markup=get_menu_keyboard())
+    bot.send_message(uid, "Готово!", reply_markup=get_menu_keyboard())
 
 
 @bot.message_handler(func=lambda msg: msg.text == "❌ Отменить")
@@ -548,22 +533,22 @@ def cancel_cmd(msg):
             if os.path.exists(fpath):
                 os.remove(fpath)
         user_files[uid] = []
-    bot.reply_to(msg, "❌ Удалено.", reply_markup=get_menu_keyboard())
+    bot.reply_to(msg, "Удалено.", reply_markup=get_menu_keyboard())
 
 
 @bot.message_handler(func=lambda msg: msg.text == "📋 Список файлов")
 def list_cmd(msg):
     uid = msg.from_user.id
     if uid not in user_files or not user_files[uid]:
-        bot.reply_to(msg, "📋 Пусто.", reply_markup=get_menu_keyboard())
+        bot.reply_to(msg, "Пусто.", reply_markup=get_menu_keyboard())
         return
-    text = "📋 *Файлы:*\n"
+    text = "Файлы:\n"
     for fpath in user_files[uid]:
         if os.path.exists(fpath):
             fname = os.path.basename(fpath)
             s = os.path.getsize(fpath)
             text += f"• {fname} ({s//1024} КБ)\n"
-    bot.reply_to(msg, text, parse_mode="Markdown", reply_markup=get_menu_keyboard())
+    bot.reply_to(msg, text, reply_markup=get_menu_keyboard())
 
 
 @bot.message_handler(func=lambda msg: msg.text == "🗑 Очистить")
@@ -574,7 +559,7 @@ def clear_cmd(msg):
             if os.path.exists(fpath):
                 os.remove(fpath)
         user_files[uid] = []
-    bot.reply_to(msg, "🗑 Очищено.", reply_markup=get_menu_keyboard())
+    bot.reply_to(msg, "Очищено.", reply_markup=get_menu_keyboard())
 
 
 @bot.message_handler(func=lambda msg: True)
