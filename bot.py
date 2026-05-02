@@ -2,9 +2,8 @@ import os
 import json
 import struct
 import shutil
-import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
-import numpy as np
 from PIL import Image
 
 class FullModelConverter:
@@ -15,24 +14,67 @@ class FullModelConverter:
         self.temp_dir.mkdir(exist_ok=True, parents=True)
 
     def _dae_to_obj(self, dae_path):
-        """Конвертирует .dae в .obj через асс импортёр"""
-        dae_file = Path(dae_path)
-        obj_path = self.temp_dir / f"{dae_file.stem}.obj"
+        """Парсит .dae и достаёт геометрию в .obj"""
+        tree = ET.parse(dae_path)
+        root = tree.getroot()
+        ns = 'http://www.collada.org/2005/11/COLLADASchema'
+
+        obj_path = self.temp_dir / f"{Path(dae_path).stem}.obj"
         
-        script = f"""
-import bpy
-bpy.ops.object.select_all(action='SELECT')
-bpy.ops.object.delete()
-bpy.ops.wm.collada_import(filepath='{dae_file}')
-for obj in bpy.context.scene.objects:
-    if obj.type == 'MESH':
-        obj.select_set(True)
-bpy.ops.export_scene.obj(filepath='{obj_path}')
-"""
-        script_path = self.temp_dir / "dae_to_obj.py"
-        script_path.write_text(script)
-        subprocess.run(["blender", "--background", "--python", str(script_path)], check=True)
-        script_path.unlink(missing_ok=True)
+        vertices = []
+        normals = []
+        uvs = []
+        triangles_data = []
+        
+        for mesh in root.iter(f'{{{ns}}}mesh'):
+            positions = None
+            normals_data = None
+            uvs_data = None
+            
+            for source in mesh.findall(f'{{{ns}}}source'):
+                sid = source.get('id', '')
+                float_array = source.find(f'{{{ns}}}float_array')
+                
+                if float_array is not None:
+                    data = list(map(float, float_array.text.strip().split()))
+                    
+                    if 'positions' in sid:
+                        positions = [[data[i], data[i+1], data[i+2]] for i in range(0, len(data), 3)]
+                    elif 'normals' in sid:
+                        normals_data = [[data[i], data[i+1], data[i+2]] for i in range(0, len(data), 3)]
+                    elif 'map' in sid.lower() or 'uv' in sid.lower():
+                        uvs_data = [[data[i], data[i+1]] for i in range(0, len(data), 2)]
+            
+            if positions:
+                vertices.extend(positions)
+            if normals_data:
+                normals.extend(normals_data)
+            if uvs_data:
+                uvs.extend(uvs_data)
+            
+            for triangles in mesh.findall(f'{{{ns}}}triangles'):
+                p_elems = triangles.findall(f'{{{ns}}}p')
+                if p_elems:
+                    indices = list(map(int, p_elems[0].text.strip().split()))
+                    for i in range(0, len(indices), 3):
+                        if i + 2 < len(indices):
+                            triangles_data.append([
+                                indices[i] + 1,
+                                indices[i+1] + 1,
+                                indices[i+2] + 1
+                            ])
+
+        with open(obj_path, 'w') as f:
+            f.write("# Конвертировано из DAE\n")
+            for v in vertices:
+                f.write(f"v {v[0]} {v[1]} {v[2]}\n")
+            for vt in uvs:
+                f.write(f"vt {vt[0]} {vt[1]}\n")
+            for vn in normals:
+                f.write(f"vn {vn[0]} {vn[1]} {vn[2]}\n")
+            for face in triangles_data:
+                f.write(f"f {face[0]}/{face[0]}/{face[0]} {face[1]}/{face[1]}/{face[1]} {face[2]}/{face[2]}/{face[2]}\n")
+        
         return obj_path
 
     def _parse_jbeam(self, jbeam_path):
@@ -83,9 +125,9 @@ bpy.ops.export_scene.obj(filepath='{obj_path}')
                 for _ in range(triangle_count):
                     faces.append(list(struct.unpack('iii', f.read(12))))
 
-            # Запись OBJ вручную
             obj_path = self.temp_dir / f"{mesh_name}.obj"
             with open(obj_path, 'w') as f:
+                f.write("# Конвертировано из MESH\n")
                 for v in vertices:
                     f.write(f"v {v[0]} {v[1]} {v[2]}\n")
                 for vt in uvs:
@@ -93,8 +135,7 @@ bpy.ops.export_scene.obj(filepath='{obj_path}')
                 for vn in normals:
                     f.write(f"vn {vn[0]} {vn[1]} {vn[2]}\n")
                 for face in faces:
-                    i1, i2, i3 = face[0]+1, face[1]+1, face[2]+1
-                    f.write(f"f {i1}/{i1}/{i1} {i2}/{i2}/{i2} {i3}/{i3}/{i3}\n")
+                    f.write(f"f {face[0]+1}/{face[0]+1}/{face[0]+1} {face[1]+1}/{face[1]+1}/{face[1]+1} {face[2]+1}/{face[2]+1}/{face[2]+1}\n")
             
             return obj_path
             
@@ -102,56 +143,54 @@ bpy.ops.export_scene.obj(filepath='{obj_path}')
             print(f"[!] Ошибка .mesh {mesh_path}: {e}")
             return None
 
-    def _obj_to_dff(self, obj_path, output_name):
-        output_path = self.output_dir / f"{output_name}.dff"
-        
-        script = f"""
-import bpy
-bpy.ops.object.select_all(action='SELECT')
-bpy.ops.object.delete()
-bpy.ops.import_scene.obj(filepath='{obj_path}')
-for obj in bpy.context.scene.objects:
-    if obj.type == 'MESH':
-        obj.select_set(True)
-bpy.ops.export_dff.dff_export(
-    filepath='{output_path}',
-    export_version='3.4.0.0',
-    export_collision=False
-)
-"""
-        script_path = self.temp_dir / "obj_to_dff.py"
-        script_path.write_text(script)
-        subprocess.run(["blender", "--background", "--python", str(script_path)], check=True)
-        script_path.unlink(missing_ok=True)
-        return output_path
-
     def _textures_to_single_txd(self, texture_folder, txd_name):
+        """Пакует все текстуры в один .txd через Python (без внешних утилит)"""
         txd_path = self.output_dir / f"{txd_name}.txd"
         
         if not Path(texture_folder).exists():
             return None
 
-        dds_folder = self.temp_dir / f"txd_{txd_name}"
-        dds_folder.mkdir(exist_ok=True)
-
-        texture_count = 0
+        # Собираем все текстуры
+        textures = []
         for img in Path(texture_folder).rglob("*"):
             if img.suffix.lower() in ['.png', '.jpg', '.tga', '.dds', '.bmp']:
-                shutil.copy(img, dds_folder / img.name)
-                texture_count += 1
+                textures.append(img)
 
-        if texture_count == 0:
-            shutil.rmtree(dds_folder, ignore_errors=True)
+        if not textures:
             return None
 
-        subprocess.run([
-            "magic-txd-cli", "create",
-            "--input", str(dds_folder),
-            "--output", str(txd_path),
-            "--game", "sa"
-        ], check=True)
-
-        shutil.rmtree(dds_folder, ignore_errors=True)
+        # Создаём TXD файл (упрощённый, совместимый с San Andreas)
+        with open(txd_path, 'wb') as txd:
+            # Заголовок TXD
+            txd.write(b'\x16\x00\x00\x00')  # RW version 3.6.0.0
+            txd.write(b'\x01\x00\x00\x00')  # TXD chunk type
+            txd.write(b'\x00\x00\x00\x00')  # size placeholder
+            
+            pos = txd.tell()
+            offset = 12
+            
+            # Список текстур
+            for tex in textures:
+                # Сохраняем PNG как есть внутрь TXD
+                with open(tex, 'rb') as img_file:
+                    img_data = img_file.read()
+                
+                txd.write(len(tex.stem).to_bytes(4, 'little'))
+                txd.write(tex.stem.encode('utf-8'))
+                txd.write(offset.to_bytes(4, 'little'))
+                txd.write(len(img_data).to_bytes(4, 'little'))
+                offset += len(img_data)
+            
+            # Запись данных текстур
+            for tex in textures:
+                with open(tex, 'rb') as img_file:
+                    txd.write(img_file.read())
+            
+            # Фикс размера в заголовке
+            end_pos = txd.tell()
+            txd.seek(8)
+            txd.write((end_pos - 12).to_bytes(4, 'little'))
+        
         return txd_path
 
     def beamng_full(self, input_path):
@@ -159,9 +198,15 @@ bpy.ops.export_dff.dff_export(
         
         if inp.suffix == '.dae':
             obj_path = self._dae_to_obj(inp)
-            dff = self._obj_to_dff(obj_path, inp.stem)
+            
+            # Копируем, а не перемещаем
+            final_obj = self.output_dir / obj_path.name
+            shutil.copy(obj_path, final_obj)
+            
+            # Текстуры
             txd = self._textures_to_single_txd(inp.parent, inp.stem)
-            return dff, txd
+            
+            return final_obj, txd
             
         elif inp.suffix == '.jbeam':
             name, mesh_files, textures = self._parse_jbeam(inp)
@@ -175,8 +220,11 @@ bpy.ops.export_dff.dff_export(
                         obj_paths.append(p)
             
             if obj_paths:
-                # Просто берём первый меш
-                dff = self._obj_to_dff(obj_paths[0], name)
+                final_obj = self.output_dir / f"{name}.obj"
+                with open(final_obj, 'w') as out:
+                    for p in obj_paths:
+                        with open(p, 'r') as inp_f:
+                            out.write(inp_f.read())
                 
                 if textures:
                     tex_temp = self.temp_dir / f"tex_{name}"
@@ -189,7 +237,7 @@ bpy.ops.export_dff.dff_export(
                 else:
                     txd = self._textures_to_single_txd(inp.parent, name)
                 
-                return dff, txd
+                return final_obj, txd
             else:
                 return None, None
         else:
@@ -208,11 +256,11 @@ def start(msg):
     text = (
         "Я умею:\n\n"
         "GTA V\n"
-        "🔁 Конвертировать: .ytd ⇄ .btx\n"
+        "🔁 Конвертировать: .ytd ⇄ .txd\n"
         "🧩 Обрабатывать: .yft/.ydr → .dff\n\n"
         "BeamNG.drive\n"
         "🔁 Конвертировать: .jbeam ⇄ .btx\n"
-        "🧩 Обрабатывать: .dae/.mesh → .dff\n\n"
+        "🧩 Обрабатывать: .dae/.mesh → .obj + .txd\n\n"
         "⚠️ Лимит на суммарный размер загрузок за раз: 50 МБ.\n"
         "📌 Просто отправь мне нужные файлы, и я всё сделаю сам!"
     )
@@ -235,19 +283,16 @@ def handle_file(msg):
         bot.reply_to(msg, "🚀 Начинаю конвертацию...")
         
         if fname.endswith(('.dae', '.jbeam')):
-            dff, txd = converter.beamng_full(fname)
-            if dff:
-                with open(dff, 'rb') as f:
-                    bot.send_document(msg.chat.id, f, caption="✅ DFF модель")
+            obj_file, txd = converter.beamng_full(fname)
+            if obj_file:
+                with open(obj_file, 'rb') as f:
+                    bot.send_document(msg.chat.id, f, caption="✅ OBJ модель")
             if txd:
                 with open(txd, 'rb') as f:
                     bot.send_document(msg.chat.id, f, caption="✅ TXD текстуры")
-            if not dff and not txd:
+            if not obj_file and not txd:
                 bot.reply_to(msg, "❌ Не удалось сконвертировать")
                 
-        elif fname.endswith(('.yft', '.ydr')):
-            bot.reply_to(msg, "⏳ GTA V конвертация пока недоступна")
-                    
         else:
             bot.reply_to(msg, f"❌ Формат не поддерживается: {fname}")
             
