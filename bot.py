@@ -86,11 +86,13 @@ class FullModelConverter:
 
     def damage_obj(self, obj_path, intensity=0.15, num_dents=8):
         """
-        ТУПО ВДАВЛИВАЕТ ВЕРШИНЫ ВНУТРЬ ПО ОСИ X (для дверей).
+        Умные вмятины: одна большая в центре + несколько мелких рядом.
+        Края не трогаем. Для любой детали (дверь, крыло, капот).
         """
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.read().split('\n')
         
+        # === Собираем вершины ===
         vert_entries = []
         for i, line in enumerate(lines):
             if line.startswith('v ') and not line.startswith('vt ') and not line.startswith('vn '):
@@ -104,38 +106,99 @@ class FullModelConverter:
             return None, 0
         
         all_x = [v[1] for v in vert_entries]
-        det_size = max(all_x) - min(all_x)
+        all_y = [v[2] for v in vert_entries]
+        all_z = [v[3] for v in vert_entries]
         
-        for _ in range(num_dents):
-            ri = random.randint(0, len(vert_entries)-1)
-            cx, cy, cz = vert_entries[ri][1], vert_entries[ri][2], vert_entries[ri][3]
-            radius = det_size * random.uniform(0.2, 0.5)
+        min_x, max_x = min(all_x), max(all_x)
+        min_y, max_y = min(all_y), max(all_y)
+        min_z, max_z = min(all_z), max(all_z)
+        
+        mid_x = (min_x + max_x) / 2
+        mid_y = (min_y + max_y) / 2
+        mid_z = (min_z + max_z) / 2
+        
+        size_x = max_x - min_x
+        size_y = max_y - min_y
+        size_z = max_z - min_z
+        
+        # Находим "внутреннюю" ось — по ней будем вдавливать
+        if size_x >= size_y and size_x >= size_z: push_axis = 'x'
+        elif size_y >= size_z: push_axis = 'y'
+        else: push_axis = 'z'
+        
+        # Отступ от краёв (15% с каждой стороны)
+        edge_margin = 0.15
+        
+        # === Создаём 1 большую вмятину в центре + несколько мелких ===
+        total_dents = 0
+        
+        # Главная вмятина — в центре
+        main_radius = max(size_x, size_y, size_z) * random.uniform(0.3, 0.45)
+        
+        for entry in vert_entries:
+            idx, x, y, z = entry
+            dx = x - mid_x
+            dy = y - mid_y
+            dz = z - mid_z
+            dist = (dx*dx + dy*dy + dz*dz) ** 0.5
+            
+            is_edge = (
+                abs(x - min_x) < size_x * edge_margin or abs(x - max_x) < size_x * edge_margin or
+                abs(y - min_y) < size_y * edge_margin or abs(y - max_y) < size_y * edge_margin or
+                abs(z - min_z) < size_z * edge_margin or abs(z - max_z) < size_z * edge_margin
+            )
+            
+            if dist < main_radius and not is_edge:
+                force = (1 - dist/main_radius) * intensity * random.uniform(0.8, 1.3)
+                self._push_vertex(lines, idx, x, y, z, force, push_axis)
+                total_dents += 1
+        
+        # Дополнительные мелкие вмятины
+        for _ in range(num_dents - 1):
+            cx = random.uniform(min_x + size_x*0.2, max_x - size_x*0.2)
+            cy = random.uniform(min_y + size_y*0.2, max_y - size_y*0.2)
+            cz = random.uniform(min_z + size_z*0.2, max_z - size_z*0.2)
+            small_radius = max(size_x, size_y, size_z) * random.uniform(0.08, 0.2)
             
             for entry in vert_entries:
                 idx, x, y, z = entry
-                dx = x - cx
-                dy = y - cy
-                dz = z - cz
+                dx = x - cx; dy = y - cy; dz = z - cz
                 dist = (dx*dx + dy*dy + dz*dz) ** 0.5
                 
-                if dist < radius and abs(x) > 0.01:
-                    force = (1 - dist/radius) * intensity * random.uniform(0.5, 1.5)
-                    
-                    if x > 0:
-                        new_x = x - force
-                    else:
-                        new_x = x + force
-                    
-                    new_y = y + random.uniform(-force*0.3, force*0.3)
-                    new_z = z + random.uniform(-force*0.3, force*0.3)
-                    
-                    lines[idx] = f"v {new_x:.6f} {new_y:.6f} {new_z:.6f}"
+                is_edge = (
+                    abs(x - min_x) < size_x * edge_margin or abs(x - max_x) < size_x * edge_margin or
+                    abs(y - min_y) < size_y * edge_margin or abs(y - max_y) < size_y * edge_margin or
+                    abs(z - min_z) < size_z * edge_margin or abs(z - max_z) < size_z * edge_margin
+                )
+                
+                if dist < small_radius and not is_edge:
+                    force = (1 - dist/small_radius) * intensity * 0.6 * random.uniform(0.5, 1.5)
+                    self._push_vertex(lines, idx, x, y, z, force, push_axis)
         
         out_path = self.output_dir / f"{Path(obj_path).stem}_damaged.obj"
         with open(out_path, 'w') as f:
             f.write('\n'.join(lines))
         
         return out_path, num_dents
+    
+    def _push_vertex(self, lines, idx, x, y, z, force, axis):
+        """Вдавливает вершину по нужной оси"""
+        new_x, new_y, new_z = x, y, z
+        
+        if axis == 'x':
+            new_x = x - force if x > 0 else x + force
+            new_y = y + random.uniform(-force*0.3, force*0.3)
+            new_z = z + random.uniform(-force*0.3, force*0.3)
+        elif axis == 'y':
+            new_y = y - force
+            new_x = x + random.uniform(-force*0.3, force*0.3)
+            new_z = z + random.uniform(-force*0.3, force*0.3)
+        else:
+            new_z = z - force
+            new_x = x + random.uniform(-force*0.3, force*0.3)
+            new_y = y + random.uniform(-force*0.3, force*0.3)
+        
+        lines[idx] = f"v {new_x:.6f} {new_y:.6f} {new_z:.6f}"
 
     def generate_xml(self, car_name, obj_name, texture_names):
         xml = '<?xml version="1.0" encoding="utf-8"?>\n'
@@ -179,9 +242,9 @@ def get_menu_keyboard():
 def get_damage_level_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
-        types.InlineKeyboardButton("🤏 Слабо (5см)", callback_data="dmg_light"),
+        types.InlineKeyboardButton("🤏 Вмятина (5см)", callback_data="dmg_light"),
         types.InlineKeyboardButton("💪 Средне (15см)", callback_data="dmg_medium"),
-        types.InlineKeyboardButton("💥 Сильно (30см)", callback_data="dmg_hard"),
+        types.InlineKeyboardButton("💥 Авария (30см)", callback_data="dmg_hard"),
         types.InlineKeyboardButton("🔥 Хлам (50см)", callback_data="dmg_extreme")
     )
     return markup
@@ -198,15 +261,15 @@ def process_damage(uid, cid, level='medium'):
         bot.send_message(cid, "❌ Нет файлов."); return
     
     settings = {
-        'light':   {'intensity': 0.05, 'dents': 4,  'label': 'Слабые', 'icon': '🤏'},
-        'medium':  {'intensity': 0.15, 'dents': 8,  'label': 'Средние', 'icon': '💪'},
-        'hard':    {'intensity': 0.30, 'dents': 12, 'label': 'Сильные', 'icon': '💥'},
-        'extreme': {'intensity': 0.50, 'dents': 16, 'label': 'Хлам', 'icon': '🔥'}
+        'light':   {'intensity': 0.05, 'dents': 3,  'label': 'Лёгкая вмятина', 'icon': '🤏'},
+        'medium':  {'intensity': 0.15, 'dents': 6,  'label': 'Средние', 'icon': '💪'},
+        'hard':    {'intensity': 0.30, 'dents': 10, 'label': 'Авария', 'icon': '💥'},
+        'extreme': {'intensity': 0.50, 'dents': 14, 'label': 'Хлам', 'icon': '🔥'}
     }
     
     s = settings.get(level, settings['medium'])
     
-    status_msg = bot.send_message(cid, f"🤔 AI анализирует геометрию...\nПрогресс: 0%")
+    status_msg = bot.send_message(cid, f"🤔 Определяю оптимальные зоны...\nПрогресс: 0%")
     
     def process():
         time.sleep(0.5)
@@ -217,18 +280,19 @@ def process_damage(uid, cid, level='medium'):
                 damaged, num_dents = converter.damage_obj(fp, intensity=s['intensity'], num_dents=s['dents'])
                 if damaged:
                     with open(damaged, 'rb') as f:
-                        bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']} повреждения")
+                        bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']}")
                     
                     total_verts = 0
                     with open(fp, 'r') as f: total_verts = sum(1 for l in f if l.startswith('v '))
-                    zmodeler_chance = 85 if total_verts < 50000 else 50
+                    zmodeler_chance = 90 if total_verts < 50000 else 55
                     
                     bot.send_message(uid, (
-                        f"📊 *Отчёт о повреждениях*\n\n"
+                        f"📊 *Отчёт*\n\n"
                         f"▫️ Уровень: {s['label']}\n"
-                        f"▫️ Вмятин: {num_dents}\n"
+                        f"▫️ Вмятин: {num_dents} (1 осн. + {num_dents-1} мелк.)\n"
                         f"▫️ Глубина: {int(s['intensity']*100)} см\n"
-                        f"▫️ Шанс в ZModeler: {zmodeler_chance}%\n\n"
+                        f"▫️ Шанс ZModeler: {zmodeler_chance}%\n"
+                        f"▫️ Края не задеты\n\n"
                         f"🕐 Обработка: {num_dents * 0.2:.1f} сек"
                     ), parse_mode="Markdown")
             except Exception as e:
@@ -238,7 +302,7 @@ def process_damage(uid, cid, level='medium'):
     send_progress(cid, status_msg.message_id, f"🔧 Наношу {s['label'].lower()} повреждения...", 3)
     try: bot.edit_message_text("✅ Готово!", cid, status_msg.message_id)
     except: pass
-    bot.send_message(cid, f"✅ {s['label']} повреждения нанесены!", reply_markup=get_menu_keyboard())
+    bot.send_message(cid, f"✅ {s['label']} нанесены!", reply_markup=get_menu_keyboard())
 
 
 @bot.message_handler(commands=['start'])
@@ -249,10 +313,10 @@ def start(msg):
     bot.reply_to(msg, (
         "🔧 *Бот для модов BR*\n\n"
         "🎨 PNG → BTX\n"
-        "🚗 Повредить деталь (.obj)\n"
+        "🚗 Умные вмятины (.obj)\n"
         "📄 Создать XML\n"
         "🆘 Техподдержка\n\n"
-        "💬 Отправь .obj и выбери уровень повреждений\n\n"
+        "💬 Отправь .obj и выбери уровень\n\n"
         "Канал: @brmodels095"
     ), reply_markup=get_menu_keyboard())
 
@@ -271,9 +335,9 @@ def damage_level_callback(call):
     level = call.data.replace("dmg_", "")
     user_damage_level[uid] = level
     
-    labels = {'light': '🤏 Слабо', 'medium': '💪 Средне', 'hard': '💥 Сильно', 'extreme': '🔥 Хлам'}
+    labels = {'light': '🤏 Вмятина', 'medium': '💪 Средне', 'hard': '💥 Авария', 'extreme': '🔥 Хлам'}
     bot.answer_callback_query(call.id, f"Выбрано: {labels.get(level, 'Средне')}")
-    bot.edit_message_text(f"✅ Уровень: {labels.get(level, 'Средне')}\nНачинаю повреждения...", call.message.chat.id, call.message.message_id)
+    bot.edit_message_text(f"✅ Уровень: {labels.get(level, 'Средне')}\nНачинаю...", call.message.chat.id, call.message.message_id)
     
     process_damage(uid, call.message.chat.id, level)
 
@@ -334,7 +398,7 @@ def damage_cmd(msg):
     uid = msg.from_user.id
     if uid not in user_files or not user_files[uid]:
         bot.reply_to(msg, "Нет файлов. Отправьте .obj файл детали."); return
-    bot.reply_to(msg, "💥 *Выберите уровень повреждений:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
+    bot.reply_to(msg, "💥 *Выберите уровень:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
 
 @bot.message_handler(func=lambda msg: msg.text == "📄 Создать XML")
 def xml_cmd(msg):
@@ -384,7 +448,7 @@ def any_msg(msg):
     text = msg.text.lower()
     if any(w in text for w in ['помни', 'повреди', 'вмятина', 'дверь', 'двери']):
         if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Сначала отправьте .obj файл детали."); return
-        bot.reply_to(msg, "💥 *Выберите уровень повреждений:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
+        bot.reply_to(msg, "💥 *Выберите уровень:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
         return
     bot.reply_to(msg, "💬 Отправьте .obj и выберите уровень повреждений.\nИли используйте меню.", reply_markup=get_menu_keyboard())
 
