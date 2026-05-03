@@ -186,7 +186,7 @@ class FullModelConverter:
         if not vertices:
             return None
         
-        # Вычисляем целевое количество вершин
+        # Если полигонов много — упрощаем
         target_verts = 60000
         if len(faces) > 50000:
             ratio = 50000 / len(faces)
@@ -329,15 +329,7 @@ class FullModelConverter:
             if not faces:
                 raise Exception(f"Граней: 0")
 
-            # Упрощение при конвертации DAE
-            target_verts = 60000
-            if len(faces) > 50000:
-                ratio = 50000 / len(faces)
-                target_verts = max(3000, int(len(vertices) * ratio))
-            
-            if len(vertices) > target_verts or len(faces) > 50000:
-                vertices, uvs, faces = self._simplify_model(vertices, uvs, faces, target_verts)
-            
+            # Не упрощаем DAE — сохраняем детали для модов на машины
             while len(uvs) < len(vertices):
                 uvs.append([0.0, 0.0])
 
@@ -406,7 +398,7 @@ def start(msg):
     bot.reply_to(msg, (
         "Возможности:\n\n"
         "🎨 PNG → BTX (сжатый, 512x512)\n"
-        "📦 .dae → .obj (авто-упрощение)\n"
+        "📦 .dae → .obj (для модов на машины)\n"
         "🧩 .obj → .obj (авто-упрощение)\n"
         "🔧 .dff / .3ds → проверка\n"
         "🔍 AI-анализ + советы\n\n"
@@ -531,15 +523,18 @@ def convert_cmd(msg):
                         bot.send_document(uid, f, caption=f"BTX: {Path(btx).name}")
 
             elif ext == '.dae':
-                bot.send_message(uid, f"⏳ Конвертирую DAE...")
+                bot.send_message(uid, f"⏳ Конвертирую DAE в OBJ для машины...")
                 try:
                     obj_file, zip_file = converter.dae_to_obj(fpath)
                     if obj_file and os.path.exists(obj_file):
                         with open(obj_file, 'rb') as f:
-                            bot.send_document(uid, f, caption="OBJ (из DAE)")
+                            bot.send_document(uid, f, caption="OBJ (из DAE, без упрощения)")
                         new_info = analyze_file(str(obj_file))
                         if new_info:
-                            bot.send_message(uid, f"Готово! Вершин: {new_info['verts']}, граней: {new_info['faces']}")
+                            msg_text = f"Готово! Вершин: {new_info['verts']}, граней: {new_info['faces']}"
+                            if new_info['verts'] > 65535:
+                                msg_text += "\n⚠️ Вершин больше 65535 — отправь .obj ещё раз для упрощения."
+                            bot.send_message(uid, msg_text)
                     if zip_file and os.path.exists(zip_file):
                         with open(zip_file, 'rb') as f:
                             bot.send_document(uid, f, caption="Текстуры ZIP")
