@@ -18,10 +18,9 @@ SUPPORT_USERNAME = "@brmodels013"
 
 bot = telebot.TeleBot(TOKEN)
 user_files = {}
+user_damage_level = {}
 
-# ========== AI-АНАЛИЗ ==========
 def analyze_file(file_path):
-    """AI-анализ для ZModeler Android"""
     try:
         ext = Path(file_path).suffix.lower()
         size_kb = os.path.getsize(file_path) // 1024
@@ -34,34 +33,11 @@ def analyze_file(file_path):
                     elif line.startswith('vt '): uvs += 1
                     elif line.startswith('f '): faces += 1
         
-        elif ext == '.dae':
-            import xml.etree.ElementTree as ET
-            try:
-                tree = ET.parse(file_path)
-                root = tree.getroot()
-                ns = 'http://www.collada.org/2005/11/COLLADASchema'
-                for mesh in root.iter(f'{{{ns}}}mesh'):
-                    for source in mesh.findall(f'{{{ns}}}source'):
-                        if 'positions' in source.get('id', ''):
-                            fa = source.find(f'{{{ns}}}float_array')
-                            if fa is not None and fa.text:
-                                verts += len(fa.text.strip().split()) // 3
-                    for tag_name in ['triangles', 'polylist', 'polygons']:
-                        for elem in mesh.findall(f'{{{ns}}}{tag_name}'):
-                            p_elems = elem.findall(f'{{{ns}}}p')
-                            if p_elems and p_elems[0].text:
-                                faces += len(p_elems[0].text.strip().split()) // 3
-            except: pass
-        
-        issues = []
-        warnings = []
+        issues, warnings = [], []
         needs_fix = False
         
-        if ext == '.dae':
-            needs_fix = True
-        
         if verts > 65535:
-            issues.append(f"Вершин: {verts} (больше 65535) - краш ZModeler")
+            issues.append(f"Вершин: {verts} (>65535) - краш ZModeler")
             needs_fix = True
         elif verts > 40000:
             warnings.append(f"Вершин: {verts} - возможны лаги")
@@ -70,42 +46,22 @@ def analyze_file(file_path):
             issues.append(f"Полигонов: {faces} - краш ZModeler")
             needs_fix = True
         
-        if size_kb > 10000:
-            warnings.append(f"Размер: {size_kb} КБ - может долго грузиться")
+        if issues: verdict = "Требуется конвертация"
+        elif needs_fix: verdict = "Рекомендуется конвертация"
+        elif warnings: verdict = "Может работать с ограничениями"
+        else: verdict = "Готово к использованию"
         
-        if issues:
-            verdict = "Требуется конвертация"
-        elif needs_fix:
-            verdict = "Рекомендуется конвертация"
-        elif warnings:
-            verdict = "Может работать с ограничениями"
-        elif ext in ['.dff', '.3ds']:
-            verdict = "Не нуждается в конвертации"
-        elif verts > 0:
-            verdict = "Не нуждается в конвертации"
-        else:
-            verdict = "Проанализирован"
-        
-        return {
-            'ext': ext, 'verts': verts, 'faces': faces, 'uvs': uvs,
-            'size_kb': size_kb, 'issues': issues, 'warnings': warnings,
-            'verdict': verdict, 'needs_fix': needs_fix
-        }
-    except:
-        return None
+        return {'ext': ext, 'verts': verts, 'faces': faces, 'uvs': uvs,
+                'size_kb': size_kb, 'issues': issues, 'warnings': warnings,
+                'verdict': verdict, 'needs_fix': needs_fix}
+    except: return None
 
 
-# ========== КОНВЕРТЕР ==========
 class FullModelConverter:
     def __init__(self):
         self.output_dir = Path("converted_output")
         self.temp_dir = Path("temp_processing")
         self.output_dir.mkdir(exist_ok=True, parents=True)
-        self.temp_dir.mkdir(exist_ok=True, parents=True)
-
-    def _clean_temp(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir, ignore_errors=True)
         self.temp_dir.mkdir(exist_ok=True, parents=True)
 
     def _png_to_btx(self, png_path, output_name=None):
@@ -128,60 +84,90 @@ class FullModelConverter:
             f.write(compressed.tobytes())
         return btx_path
 
-    def damage_obj(self, obj_path, intensity=0.8):
-        """Создаёт СИЛЬНЫЕ вмятины на детали с имитацией размышлений"""
-        # Имитация размышлений AI
-        time.sleep(1.5)
-        
-        lines = []
+    def damage_obj(self, obj_path, intensity=0.15, num_dents=8):
+        """
+        Создаёт ВМЯТИНЫ по нормалям.
+        intensity: глубина (0.05=слабо, 0.15=средне, 0.30=сильно)
+        num_dents: количество вмятин
+        """
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()
+            lines = f.read().split('\n')
         
+        # Собираем вершины и грани
         verts = []
+        vert_indices = []
+        faces = []
+        
         for i, line in enumerate(lines):
-            if line.startswith('v '):
+            if line.startswith('v ') and not line.startswith('vt ') and not line.startswith('vn '):
                 parts = line.strip().split()
-                verts.append({'idx': i, 'x': float(parts[1]), 'y': float(parts[2]), 'z': float(parts[3])})
+                if len(parts) >= 4:
+                    verts.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                    vert_indices.append(i)
+            elif line.startswith('f '):
+                parts = line.strip().split()
+                face = []
+                for p in parts[1:]:
+                    idx = int(p.split('/')[0]) - 1
+                    if 0 <= idx < len(verts): face.append(idx)
+                if len(face) == 3: faces.append(face)
         
-        if not verts:
-            return None, 0
+        if len(verts) < 10: return None, 0
         
-        xs = [v['x'] for v in verts]
-        width = max(xs) - min(xs)
-        height = max([v['y'] for v in verts]) - min([v['y'] for v in verts])
+        # Вычисляем нормали
+        vertex_normals = [[0.0, 0.0, 0.0] for _ in verts]
+        for face in faces:
+            if len(face) != 3: continue
+            v0, v1, v2 = verts[face[0]], verts[face[1]], verts[face[2]]
+            e1 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]]
+            e2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]]
+            nx = e1[1]*e2[2] - e1[2]*e2[1]
+            ny = e1[2]*e2[0] - e1[0]*e2[2]
+            nz = e1[0]*e2[1] - e1[1]*e2[0]
+            length = (nx*nx + ny*ny + nz*nz) ** 0.5
+            if length > 0: nx /= length; ny /= length; nz /= length
+            for fi in face:
+                vertex_normals[fi][0] += nx
+                vertex_normals[fi][1] += ny
+                vertex_normals[fi][2] += nz
         
-        num_dents = random.randint(6, 15)
-        damaged_verts = set()
+        for i in range(len(vertex_normals)):
+            n = vertex_normals[i]
+            length = (n[0]**2 + n[1]**2 + n[2]**2) ** 0.5
+            if length > 0: n[0] /= length; n[1] /= length; n[2] /= length
+        
+        # Создаём вмятины
+        all_x = [v[0] for v in verts]
+        det_size = max(all_x) - min(all_x)
         
         for _ in range(num_dents):
-            # Имитация анализа каждой вмятины
-            time.sleep(0.3)
+            ri = random.randint(0, len(verts)-1)
+            cx, cy, cz = verts[ri]
+            radius = det_size * random.uniform(0.1, 0.3)
             
-            cx = random.uniform(min(xs), max(xs))
-            cy = random.uniform(min([v['y'] for v in verts]), max([v['y'] for v in verts]))
-            cz = random.uniform(min([v['z'] for v in verts]), max([v['z'] for v in verts]))
-            radius = random.uniform(0.2, 0.5) * max(width, height)
-            
-            for v in verts:
-                dist = ((v['x']-cx)**2 + (v['y']-cy)**2 + (v['z']-cz)**2)**0.5
+            for i, v in enumerate(verts):
+                dx = v[0] - cx
+                dy = v[1] - cy
+                dz = v[2] - cz
+                dist = (dx*dx + dy*dy + dz*dz) ** 0.5
+                
                 if dist < radius:
-                    force = (1 - dist/radius) * intensity * random.uniform(2.0, 4.0)
-                    if width >= height:
-                        lines[v['idx']] = f"v {v['x'] - force if v['x'] > 0 else v['x'] + force:.6f} {v['y']:.6f} {v['z']:.6f}\n"
-                    else:
-                        lines[v['idx']] = f"v {v['x']:.6f} {v['y'] - force:.6f} {v['z']:.6f}\n"
-                    damaged_verts.add(v['idx'])
+                    force = (1 - dist/radius) * intensity
+                    nx, ny, nz = vertex_normals[i]
+                    new_x = v[0] - nx * force
+                    new_y = v[1] - ny * force
+                    new_z = v[2] - nz * force
+                    verts[i] = [new_x, new_y, new_z]
+                    lines[vert_indices[i]] = f"v {new_x:.6f} {new_y:.6f} {new_z:.6f}"
         
         out_path = self.output_dir / f"{Path(obj_path).stem}_damaged.obj"
-        with open(out_path, 'w') as f:
-            f.writelines(lines)
+        with open(out_path, 'w') as f: f.write('\n'.join(lines))
         return out_path, num_dents
 
     def generate_xml(self, car_name, obj_name, texture_names):
         xml = '<?xml version="1.0" encoding="utf-8"?>\n'
         xml += f'<Car name="{car_name}">\n  <Case>\n    <Render object="{obj_name}">\n'
-        for tex in texture_names:
-            xml += f'      <Texture name="{tex}"/>\n'
+        for tex in texture_names: xml += f'      <Texture name="{tex}"/>\n'
         xml += '    </Render>\n  </Case>\n</Car>'
         xml_path = self.output_dir / f"{car_name}.xml"
         xml_path.write_text(xml, encoding='utf-8')
@@ -190,7 +176,6 @@ class FullModelConverter:
 converter = FullModelConverter()
 
 
-# ========== ПРОВЕРКА ПОДПИСКИ ==========
 def check_subscription(user_id):
     try:
         member = bot.get_chat_member(CHANNEL_ID, user_id)
@@ -203,7 +188,7 @@ def send_subscription_message(chat_id):
         types.InlineKeyboardButton("📢 Подписаться", url=CHANNEL_URL),
         types.InlineKeyboardButton("✅ Проверить подписку", callback_data="check_sub")
     )
-    bot.send_message(chat_id, "🔒 Подпишитесь чтобы пользоваться ботом\n\n" + CHANNEL_URL, reply_markup=markup)
+    bot.send_message(chat_id, "🔒 Подпишитесь\n" + CHANNEL_URL, reply_markup=markup)
 
 def get_menu_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -218,193 +203,180 @@ def get_menu_keyboard():
     )
     return markup
 
-# ========== ПРОГРЕСС-БАР ==========
+def get_damage_level_keyboard():
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("🤏 Слабо (5см)", callback_data="dmg_light"),
+        types.InlineKeyboardButton("💪 Средне (15см)", callback_data="dmg_medium"),
+        types.InlineKeyboardButton("💥 Сильно (30см)", callback_data="dmg_hard"),
+        types.InlineKeyboardButton("🔥 Очень сильно (50см)", callback_data="dmg_extreme")
+    )
+    return markup
+
 def send_progress(chat_id, message_id, text, duration=3):
-    """Имитация загрузки с обновлением сообщения"""
     steps = [10, 25, 40, 55, 70, 85, 95, 100]
     for p in steps:
-        try:
-            bot.edit_message_text(
-                f"{text}\nПрогресс: {p}%",
-                chat_id, message_id
-            )
-        except:
-            pass
+        try: bot.edit_message_text(f"{text}\nПрогресс: {p}%", chat_id, message_id)
+        except: pass
         time.sleep(duration / len(steps))
 
-# ========== ОБРАБОТЧИКИ ==========
+def process_damage(uid, cid, level='medium'):
+    if uid not in user_files or not user_files[uid]:
+        bot.send_message(cid, "❌ Нет файлов."); return
+    
+    settings = {
+        'light':   {'intensity': 0.05, 'dents': 4,  'label': 'Слабые', 'icon': '🤏'},
+        'medium':  {'intensity': 0.15, 'dents': 8,  'label': 'Средние', 'icon': '💪'},
+        'hard':    {'intensity': 0.30, 'dents': 12, 'label': 'Сильные', 'icon': '💥'},
+        'extreme': {'intensity': 0.50, 'dents': 16, 'label': 'Очень сильные', 'icon': '🔥'}
+    }
+    
+    s = settings.get(level, settings['medium'])
+    
+    status_msg = bot.send_message(cid, f"🤔 AI анализирует геометрию...\nПрогресс: 0%")
+    
+    def process():
+        time.sleep(0.5)
+        for fp in user_files[uid].copy():
+            ext = Path(fp).suffix.lower()
+            if ext != '.obj': continue
+            try:
+                damaged, num_dents = converter.damage_obj(fp, intensity=s['intensity'], num_dents=s['dents'])
+                if damaged:
+                    with open(damaged, 'rb') as f:
+                        bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']} повреждения")
+                    
+                    total_verts = 0
+                    with open(fp, 'r') as f: total_verts = sum(1 for l in f if l.startswith('v '))
+                    zmodeler_chance = 85 if total_verts < 50000 else 50
+                    
+                    bot.send_message(uid, (
+                        f"📊 *Отчёт о повреждениях*\n\n"
+                        f"▫️ Уровень: {s['label']}\n"
+                        f"▫️ Вмятин: {num_dents}\n"
+                        f"▫️ Глубина: {int(s['intensity']*100)} см\n"
+                        f"▫️ Шанс в ZModeler: {zmodeler_chance}%\n\n"
+                        f"🕐 Обработка: {num_dents * 0.2:.1f} сек"
+                    ), parse_mode="Markdown")
+            except Exception as e:
+                bot.send_message(uid, f"❌ Ошибка: {e}")
+    
+    threading.Thread(target=process).start()
+    send_progress(cid, status_msg.message_id, f"🔧 Наношу {s['label'].lower()} повреждения...", 3)
+    try: bot.edit_message_text("✅ Готово!", cid, status_msg.message_id)
+    except: pass
+    bot.send_message(cid, f"✅ {s['label']} повреждения нанесены!", reply_markup=get_menu_keyboard())
+
+
 @bot.message_handler(commands=['start'])
 def start(msg):
-    if not check_subscription(msg.from_user.id): 
-        send_subscription_message(msg.chat.id); return
+    if not check_subscription(msg.from_user.id): send_subscription_message(msg.chat.id); return
     user_files[msg.from_user.id] = []
+    user_damage_level[msg.from_user.id] = 'medium'
     bot.reply_to(msg, (
         "🔧 *Бот для модов BR*\n\n"
         "🎨 PNG → BTX\n"
         "🚗 Повредить деталь (.obj)\n"
         "📄 Создать XML\n"
         "🆘 Техподдержка\n\n"
-        "💬 Отправь .obj и напиши «помни»\n\n"
+        "💬 Отправь .obj и выбери уровень повреждений\n\n"
         "Канал: @brmodels095"
     ), reply_markup=get_menu_keyboard())
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_sub")
 def check_sub_callback(call):
     if check_subscription(call.from_user.id):
-        bot.answer_callback_query(call.id, "✅ Доступ открыт!")
+        bot.answer_callback_query(call.id, "✅ Открыт!")
         bot.edit_message_text("✅ Готово!", call.message.chat.id, call.message.message_id)
     else:
         bot.answer_callback_query(call.id, "❌ Не подписаны!", show_alert=True)
         send_subscription_message(call.message.chat.id)
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("dmg_"))
+def damage_level_callback(call):
+    uid = call.from_user.id
+    level = call.data.replace("dmg_", "")
+    user_damage_level[uid] = level
+    
+    labels = {'light': '🤏 Слабо', 'medium': '💪 Средне', 'hard': '💥 Сильно', 'extreme': '🔥 Очень сильно'}
+    bot.answer_callback_query(call.id, f"Выбрано: {labels.get(level, 'Средне')}")
+    bot.edit_message_text(f"✅ Уровень: {labels.get(level, 'Средне')}\nНачинаю повреждения...", call.message.chat.id, call.message.message_id)
+    
+    process_damage(uid, call.message.chat.id, level)
+
 @bot.message_handler(content_types=['document'])
 def handle_file(msg):
     uid = msg.from_user.id
-    if not check_subscription(uid): 
-        send_subscription_message(msg.chat.id); return
-    
+    if not check_subscription(uid): send_subscription_message(msg.chat.id); return
     file_info = bot.get_file(msg.document.file_id)
     downloaded = bot.download_file(file_info.file_path)
     fname = msg.document.file_name
     save_path = os.path.join(os.getcwd(), fname)
-    
-    with open(save_path, 'wb') as f: 
-        f.write(downloaded)
-    
-    if uid not in user_files: 
-        user_files[uid] = []
+    with open(save_path, 'wb') as f: f.write(downloaded)
+    if uid not in user_files: user_files[uid] = []
     user_files[uid].append(save_path)
-    
     info = analyze_file(save_path)
     a = ""
-    if info:
-        a = f"\n\n📊 {info['verts']} вершин | {info['faces']} полигонов | {info['verdict']}"
-    
+    if info: a = f"\n\n📊 {info['verts']} вершин | {info['faces']} полигонов | {info['verdict']}"
     bot.reply_to(msg, f"📁 {fname}{a}", reply_markup=get_menu_keyboard())
 
 @bot.message_handler(func=lambda msg: msg.text == "🔍 Анализ")
 def analyze_cmd(msg):
     uid = msg.from_user.id
-    if uid not in user_files or not user_files[uid]: 
-        bot.reply_to(msg, "Нет файлов."); return
-    
+    if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Нет файлов."); return
     for fp in user_files[uid]:
         if not os.path.exists(fp): continue
         info = analyze_file(fp)
         if info:
-            text = f"📊 {os.path.basename(fp)}\n\n"
-            text += f"Вершин: {info['verts']}\n"
-            text += f"Полигонов: {info['faces']}\n"
-            text += f"UV: {info['uvs']}\n"
-            text += f"Размер: {info['size_kb']} КБ\n"
-            text += f"Вердикт: {info['verdict']}\n"
-            if info['issues']:
-                text += f"\n⚠️ Проблемы:\n" + "\n".join(info['issues'])
+            text = f"📊 {os.path.basename(fp)}\n\nВершин: {info['verts']}\nПолигонов: {info['faces']}\nUV: {info['uvs']}\nРазмер: {info['size_kb']} КБ\nВердикт: {info['verdict']}"
+            if info['issues']: text += "\n⚠️ " + "\n".join(info['issues'])
             bot.reply_to(msg, text)
 
 @bot.message_handler(func=lambda msg: msg.text == "✅ Конвертировать")
 def convert_cmd(msg):
     uid = msg.from_user.id
-    if uid not in user_files or not user_files[uid]: 
-        bot.reply_to(msg, "Нет файлов."); return
-    
+    if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Нет файлов."); return
     files = user_files[uid].copy()
-    status_msg = bot.reply_to(msg, "⏳ AI анализирует файл...\nПрогресс: 0%")
-    
+    status_msg = bot.reply_to(msg, "⏳ AI анализирует...\nПрогресс: 0%")
     def process():
-        time.sleep(1)  # AI думает
+        time.sleep(0.5)
         for fp in files:
             try:
                 ext = Path(fp).suffix.lower()
                 if ext == '.png':
                     btx = converter._png_to_btx(fp)
                     if btx:
-                        with open(btx, 'rb') as f: 
-                            bot.send_document(uid, f, caption="BTX")
+                        with open(btx, 'rb') as f: bot.send_document(uid, f, caption="BTX")
                 elif ext in ['.obj', '.dff']:
-                    with open(fp, 'rb') as f: 
-                        bot.send_document(uid, f, caption=ext.upper())
-            except Exception as e: 
-                bot.send_message(uid, f"Ошибка: {e}")
-    
-    thread = threading.Thread(target=process)
-    thread.start()
-    send_progress(msg.chat.id, status_msg.message_id, "⏳ AI обрабатывает...", 3)
-    
-    try:
-        bot.edit_message_text("✅ Готово!", msg.chat.id, status_msg.message_id)
-    except:
-        pass
+                    with open(fp, 'rb') as f: bot.send_document(uid, f, caption=ext.upper())
+            except Exception as e: bot.send_message(uid, f"Ошибка: {e}")
+    threading.Thread(target=process).start()
+    send_progress(msg.chat.id, status_msg.message_id, "⏳ AI обрабатывает...", 2)
+    try: bot.edit_message_text("✅ Готово!", msg.chat.id, status_msg.message_id)
+    except: pass
     bot.send_message(uid, "✅ Конвертация завершена!", reply_markup=get_menu_keyboard())
 
 @bot.message_handler(func=lambda msg: msg.text == "🚗 Повредить")
 def damage_cmd(msg):
     uid = msg.from_user.id
-    if uid not in user_files or not user_files[uid]: 
+    if uid not in user_files or not user_files[uid]:
         bot.reply_to(msg, "Нет файлов. Отправьте .obj файл детали."); return
-    
-    files = user_files[uid].copy()
-    status_msg = bot.reply_to(msg, "🤔 AI анализирует геометрию...\nПрогресс: 0%")
-    
-    def process():
-        for fp in files:
-            ext = Path(fp).suffix.lower()
-            if ext != '.obj': continue
-            try:
-                damaged, num_dents = converter.damage_obj(fp)
-                if damaged:
-                    with open(damaged, 'rb') as f:
-                        bot.send_document(uid, f, caption="🚗 Повреждённая деталь")
-                    
-                    total_verts = 0
-                    with open(fp, 'r') as f:
-                        total_verts = sum(1 for l in f if l.startswith('v '))
-                    
-                    zmodeler_chance = 85 if total_verts < 50000 else 50
-                    
-                    bot.send_message(uid, (
-                        f"📊 *AI-анализ повреждений:*\n"
-                        f"• Вмятин создано: {num_dents}\n"
-                        f"• Задето вершин: ~{num_dents * 10}\n"
-                        f"• Шанс открытия в ZModeler: {zmodeler_chance}%\n"
-                        f"• Интенсивность: высокая (0.8)\n\n"
-                        f"🤔 *AI думал:* {num_dents * 0.3:.1f} сек"
-                    ), parse_mode="Markdown")
-            except Exception as e: 
-                bot.send_message(uid, f"Ошибка: {e}")
-    
-    thread = threading.Thread(target=process)
-    thread.start()
-    send_progress(msg.chat.id, status_msg.message_id, "🤔 AI рассчитывает вмятины...", 3)
-    
-    try:
-        bot.edit_message_text("✅ Готово!", msg.chat.id, status_msg.message_id)
-    except:
-        pass
-    bot.send_message(uid, "✅ Повреждения нанесены!", reply_markup=get_menu_keyboard())
+    bot.reply_to(msg, "💥 *Выберите уровень повреждений:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
 
 @bot.message_handler(func=lambda msg: msg.text == "📄 Создать XML")
 def xml_cmd(msg):
     uid = msg.from_user.id
-    if uid not in user_files or not user_files[uid]: 
-        bot.reply_to(msg, "Нет файлов."); return
-    
+    if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Нет файлов."); return
     obj_file = None
     png_names = []
     for fp in user_files[uid]:
         ext = Path(fp).suffix.lower()
         if ext == '.obj': obj_file = fp
         elif ext == '.png': png_names.append(Path(fp).stem)
-    
-    if not obj_file: 
-        bot.reply_to(msg, "❌ Нужен .obj файл."); return
-    
+    if not obj_file: bot.reply_to(msg, "❌ Нужен .obj файл."); return
     car_name = Path(obj_file).stem
     xml_path = converter.generate_xml(car_name, os.path.basename(obj_file), png_names)
-    
-    with open(xml_path, 'rb') as f: 
-        bot.send_document(uid, f, caption=f"XML для {car_name}")
-    
+    with open(xml_path, 'rb') as f: bot.send_document(uid, f, caption=f"XML для {car_name}")
     user_files[uid] = []
     bot.send_message(uid, "✅ XML создан!", reply_markup=get_menu_keyboard())
 
@@ -412,17 +384,15 @@ def xml_cmd(msg):
 def support_cmd(msg):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("📩 Написать в ЛС", url=f"https://t.me/{SUPPORT_USERNAME.replace('@', '')}"))
-    bot.reply_to(msg, f"По вопросам пишите: {SUPPORT_USERNAME}", reply_markup=markup)
+    bot.reply_to(msg, f"По вопросам: {SUPPORT_USERNAME}", reply_markup=markup)
 
 @bot.message_handler(func=lambda msg: msg.text == "📋 Список")
 def list_cmd(msg):
     uid = msg.from_user.id
-    if uid not in user_files or not user_files[uid]: 
-        bot.reply_to(msg, "Пусто."); return
+    if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Пусто."); return
     text = "📁 Файлы:\n"
     for f in user_files[uid]:
-        if os.path.exists(f): 
-            text += f"• {os.path.basename(f)}\n"
+        if os.path.exists(f): text += f"• {os.path.basename(f)}\n"
     bot.reply_to(msg, text or "Пусто.")
 
 @bot.message_handler(func=lambda msg: msg.text == "🗑 Очистить")
@@ -437,51 +407,13 @@ def clear_cmd(msg):
 @bot.message_handler(func=lambda msg: True)
 def any_msg(msg):
     uid = msg.from_user.id
-    if not check_subscription(uid): 
-        send_subscription_message(msg.chat.id); return
-    
+    if not check_subscription(uid): send_subscription_message(msg.chat.id); return
     text = msg.text.lower()
-    
     if any(w in text for w in ['помни', 'повреди', 'вмятина', 'дверь', 'двери']):
-        if uid not in user_files or not user_files[uid]:
-            bot.reply_to(msg, "Сначала отправьте .obj файл детали."); return
-        
-        status_msg = bot.reply_to(msg, "🤔 AI анализирует геометрию...\nПрогресс: 0%")
-        
-        for fp in user_files[uid].copy():
-            ext = Path(fp).suffix.lower()
-            if ext != '.obj': continue
-            try:
-                damaged, num_dents = converter.damage_obj(fp)
-                if damaged:
-                    with open(damaged, 'rb') as f:
-                        bot.send_document(uid, f, caption="🚗 Повреждённая деталь")
-                    
-                    total_verts = 0
-                    with open(fp, 'r') as f:
-                        total_verts = sum(1 for l in f if l.startswith('v '))
-                    
-                    zmodeler_chance = 85 if total_verts < 50000 else 50
-                    
-                    bot.send_message(uid, (
-                        f"📊 *AI-анализ повреждений:*\n"
-                        f"• Вмятин создано: {num_dents}\n"
-                        f"• Задето вершин: ~{num_dents * 10}\n"
-                        f"• Шанс открытия в ZModeler: {zmodeler_chance}%\n"
-                        f"• Интенсивность: высокая (0.8)\n\n"
-                        f"🤔 *AI думал:* {num_dents * 0.3:.1f} сек"
-                    ), parse_mode="Markdown")
-            except Exception as e:
-                bot.send_message(uid, f"Ошибка: {e}")
-        
-        send_progress(msg.chat.id, status_msg.message_id, "🤔 AI рассчитывает вмятины...", 3)
-        try:
-            bot.edit_message_text("✅ Готово!", msg.chat.id, status_msg.message_id)
-        except:
-            pass
+        if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Сначала отправьте .obj файл детали."); return
+        bot.reply_to(msg, "💥 *Выберите уровень повреждений:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
         return
-    
-    bot.reply_to(msg, "💬 Отправьте .obj и напишите «помни»\nИли используйте меню.", reply_markup=get_menu_keyboard())
+    bot.reply_to(msg, "💬 Отправьте .obj и выберите уровень повреждений.\nИли используйте меню.", reply_markup=get_menu_keyboard())
 
 print("[>] Бот запущен")
 bot.polling()
