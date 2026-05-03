@@ -70,7 +70,7 @@ class FullModelConverter:
             f.write(compressed.tobytes())
         return btx_path
 
-    def damage_obj(self, obj_path, intensity=0.15, num_dents=6):
+    def damage_obj(self, obj_path, intensity=0.20, num_dents=8):
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.read().split('\n')
         
@@ -129,6 +129,16 @@ class FullModelConverter:
         
         out_path = self.output_dir / f"{Path(obj_path).stem}_damaged.obj"
         with open(out_path, 'w') as f: f.write('\n'.join(lines))
+        
+        # Копируем MTL файл
+        mtl_src = Path(obj_path).with_suffix('.mtl')
+        if mtl_src.exists():
+            shutil.copy(mtl_src, self.output_dir / mtl_src.name)
+        
+        # Копируем PNG текстуры
+        for tex in Path(obj_path).parent.glob("*.png"):
+            shutil.copy(tex, self.output_dir / tex.name)
+        
         return out_path, 1+num_dents, main_damaged
     
     def _push_vertex(self, lines, idx, x, y, z, force, axis):
@@ -217,10 +227,10 @@ def get_menu_keyboard():
 def get_damage_level_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
-        types.InlineKeyboardButton("🤏 Мелкие царапины (5см)", callback_data="dmg_light"),
-        types.InlineKeyboardButton("💪 Средние вмятины (15см)", callback_data="dmg_medium"),
-        types.InlineKeyboardButton("💥 Сильная авария (30см)", callback_data="dmg_hard"),
-        types.InlineKeyboardButton("🔥 Полный хлам (50см)", callback_data="dmg_extreme")
+        types.InlineKeyboardButton("🤏 Мелкие царапины (8см)", callback_data="dmg_light"),
+        types.InlineKeyboardButton("💪 Средние вмятины (20см)", callback_data="dmg_medium"),
+        types.InlineKeyboardButton("💥 Сильная авария (40см)", callback_data="dmg_hard"),
+        types.InlineKeyboardButton("🔥 Полный хлам (60см)", callback_data="dmg_extreme")
     )
     return markup
 
@@ -236,10 +246,10 @@ def process_damage(uid, cid, level='medium'):
         bot.send_message(cid, "❌ Нет файлов. Отправьте .obj файл детали."); return
     
     settings = {
-        'light':   {'intensity': 0.05, 'dents': 5,  'label': 'Мелкие царапины (5см)', 'icon': '🤏'},
-        'medium':  {'intensity': 0.15, 'dents': 8,  'label': 'Средние вмятины (15см)', 'icon': '💪'},
-        'hard':    {'intensity': 0.30, 'dents': 12, 'label': 'Сильная авария (30см)', 'icon': '💥'},
-        'extreme': {'intensity': 0.50, 'dents': 16, 'label': 'Полный хлам (50см)', 'icon': '🔥'}
+        'light':   {'intensity': 0.08, 'dents': 5,  'label': 'Мелкие царапины (8см)', 'icon': '🤏'},
+        'medium':  {'intensity': 0.20, 'dents': 8,  'label': 'Средние вмятины (20см)', 'icon': '💪'},
+        'hard':    {'intensity': 0.40, 'dents': 12, 'label': 'Сильная авария (40см)', 'icon': '💥'},
+        'extreme': {'intensity': 0.60, 'dents': 16, 'label': 'Полный хлам (60см)', 'icon': '🔥'}
     }
     
     s = settings.get(level, settings['medium'])
@@ -255,14 +265,29 @@ def process_damage(uid, cid, level='medium'):
         try:
             damaged, total_dents, main_verts = converter.damage_obj(fp, intensity=s['intensity'], num_dents=s['dents'])
             if damaged:
-                with open(damaged, 'rb') as f: bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']}")
+                # Отправляем OBJ
+                with open(damaged, 'rb') as f:
+                    bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']} — OBJ")
+                
+                # Отправляем MTL если есть
+                mtl_file = converter.output_dir / f"{Path(fp).stem}.mtl"
+                if mtl_file.exists():
+                    with open(mtl_file, 'rb') as f:
+                        bot.send_document(uid, f, caption="📄 MTL материал")
+                
+                # Отправляем PNG текстуры
+                for tex in converter.output_dir.glob("*.png"):
+                    with open(tex, 'rb') as f:
+                        bot.send_document(uid, f, caption="🖼 Текстура")
+                
                 print(f"[DAMAGE] Пользователь {uid} получил: {Path(damaged).name}, вмятин: {total_dents}")
                 bot.send_message(uid, (
                     f"📊 *Отчёт*\n\n"
                     f"▫️ Уровень: {s['label']}\n"
                     f"▫️ Вмятин: {total_dents}\n"
                     f"▫️ Задето вершин: ~{main_verts}\n"
-                    f"▫️ Края: НЕ задеты\n\n"
+                    f"▫️ Края: НЕ задеты\n"
+                    f"▫️ MTL и текстуры: приложены\n\n"
                     f"📁 *Файл:* `{Path(damaged).name}`\n"
                     f"💡 ZModeler → Export .dff → готово"
                 ), parse_mode="Markdown")
