@@ -18,7 +18,6 @@ CHANNEL_URL = "https://t.me/brmodels095"
 bot = telebot.TeleBot(TOKEN)
 user_files = {}
 
-# ---------- AI-анализ (без изменений) ----------
 def analyze_file(file_path):
     try:
         ext = Path(file_path).suffix.lower()
@@ -82,7 +81,6 @@ def analyze_file(file_path):
     except: return None
 
 
-# ---------- Конвертер ----------
 class FullModelConverter:
     def __init__(self):
         self.output_dir = Path("converted_output")
@@ -161,13 +159,11 @@ class FullModelConverter:
         return btx_path
 
     def obj_to_dff_cloud(self, obj_path):
-        """Конвертирует OBJ в DFF через облачный API"""
         try:
             api_url = "https://api.sketchfab.com/v3/conversions"
             files = {'file': open(obj_path, 'rb')}
             data = {'outputFormat': 'dff'}
             response = requests.post(api_url, files=files, data=data, timeout=60)
-            
             if response.status_code == 200:
                 dff_url = response.json().get('url')
                 if dff_url:
@@ -176,12 +172,11 @@ class FullModelConverter:
                     with open(dff_path, 'wb') as f: f.write(dff_data)
                     return dff_path
             return None
-        except:
-            return None
+        except: return None
 
 converter = FullModelConverter()
 
-# ---------- Подписка и меню ----------
+
 def check_subscription(user_id):
     try:
         member = bot.get_chat_member(CHANNEL_ID, user_id)
@@ -215,9 +210,9 @@ def start(msg):
     bot.reply_to(msg, (
         "Возможности:\n\n"
         "🎨 PNG → BTX\n"
-        "📦 .dae → .obj (упрощённый)\n"
+        "📦 .dae → .obj (через trimesh)\n"
         "🧩 .obj → .obj (упрощённый)\n"
-        "🚀 .obj → .dff (через облачный конвертер)\n"
+        "🚀 .obj → .dff (облачный конвертер)\n"
         "🔍 AI-анализ\n\n"
         "📂 Отправьте файл → выберите действие\n\n"
         "Канал: @brmodels095"
@@ -285,12 +280,21 @@ def convert_obj_cmd(msg):
                 bot.send_message(uid, "⏳ DAE → OBJ...")
                 try:
                     import trimesh
+                    import numpy as np
+                    
                     mesh = trimesh.load(fpath, force='mesh')
-                    obj_path = converter.output_dir / f"{Path(fpath).stem}.obj"
-                    mesh.export(str(obj_path))
-                    with open(obj_path, 'rb') as f: bot.send_document(uid, f, caption="OBJ")
-                except:
-                    bot.send_message(uid, "❌ Ошибка. Установи trimesh.")
+                    if isinstance(mesh, trimesh.Scene):
+                        combined = trimesh.util.concatenate(list(mesh.geometry.values()))
+                        obj_path = converter.output_dir / f"{Path(fpath).stem}.obj"
+                        combined.export(str(obj_path))
+                    else:
+                        obj_path = converter.output_dir / f"{Path(fpath).stem}.obj"
+                        mesh.export(str(obj_path))
+                    
+                    with open(obj_path, 'rb') as f:
+                        bot.send_document(uid, f, caption="OBJ (из DAE)")
+                except Exception as e:
+                    bot.send_message(uid, f"❌ Ошибка: {str(e)[:150]}")
             
             elif ext == '.obj':
                 if info and info['needs_fix']:
