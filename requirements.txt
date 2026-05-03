@@ -1,4 +1,2 @@
 Pillow
 pytelegrambotapi
-trimesh
-numpy
