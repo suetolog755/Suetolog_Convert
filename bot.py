@@ -83,24 +83,12 @@ class FullModelConverter:
                         vert_entries.append([i, float(parts[1]), float(parts[2]), float(parts[3])])
                     except: pass
         
-        if len(vert_entries) < 10:
-            return None, 0, 0
+        if len(vert_entries) < 10: return None, 0, 0
         
-        all_x = [v[1] for v in vert_entries]
-        all_y = [v[2] for v in vert_entries]
-        all_z = [v[3] for v in vert_entries]
-        
-        min_x, max_x = min(all_x), max(all_x)
-        min_y, max_y = min(all_y), max(all_y)
-        min_z, max_z = min(all_z), max(all_z)
-        
-        mid_x = (min_x + max_x) / 2
-        mid_y = (min_y + max_y) / 2
-        mid_z = (min_z + max_z) / 2
-        
-        size_x = max_x - min_x
-        size_y = max_y - min_y
-        size_z = max_z - min_z
+        all_x = [v[1] for v in vert_entries]; all_y = [v[2] for v in vert_entries]; all_z = [v[3] for v in vert_entries]
+        min_x, max_x = min(all_x), max(all_x); min_y, max_y = min(all_y), max(all_y); min_z, max_z = min(all_z), max(all_z)
+        mid_x = (min_x + max_x) / 2; mid_y = (min_y + max_y) / 2; mid_z = (min_z + max_z) / 2
+        size_x = max_x - min_x; size_y = max_y - min_y; size_z = max_z - min_z
         
         if size_x >= size_y and size_x >= size_z: push_axis = 'x'
         elif size_y >= size_z: push_axis = 'y'
@@ -109,11 +97,9 @@ class FullModelConverter:
         edge = 0.25
         
         def is_edge(x, y, z):
-            return (
-                abs(x - min_x) < size_x * edge or abs(x - max_x) < size_x * edge or
-                abs(y - min_y) < size_y * edge or abs(y - max_y) < size_y * edge or
-                abs(z - min_z) < size_z * edge or abs(z - max_z) < size_z * edge
-            )
+            return (abs(x - min_x) < size_x*edge or abs(x - max_x) < size_x*edge or
+                    abs(y - min_y) < size_y*edge or abs(y - max_y) < size_y*edge or
+                    abs(z - min_z) < size_z*edge or abs(z - max_z) < size_z*edge)
         
         main_radius = max(size_x, size_y, size_z) * random.uniform(0.3, 0.5)
         main_damaged = 0
@@ -121,49 +107,43 @@ class FullModelConverter:
         
         for entry in vert_entries:
             idx, x, y, z = entry
-            dx = x - mid_x; dy = y - mid_y; dz = z - mid_z
-            dist = (dx*dx + dy*dy + dz*dz) ** 0.5
-            
+            dx, dy, dz = x-mid_x, y-mid_y, z-mid_z
+            dist = (dx*dx+dy*dy+dz*dz)**0.5
             if dist < main_radius and not is_edge(x, y, z):
-                force = min((1 - dist/main_radius) * intensity * random.uniform(0.8, 1.3), max_push)
+                force = min((1-dist/main_radius)*intensity*random.uniform(0.8,1.3), max_push)
                 self._push_vertex(lines, idx, x, y, z, force, push_axis)
                 main_damaged += 1
         
         for _ in range(num_dents):
-            cx = random.uniform(min_x + size_x*edge, max_x - size_x*edge)
-            cy = random.uniform(min_y + size_y*edge, max_y - size_y*edge)
-            cz = random.uniform(min_z + size_z*edge, max_z - size_z*edge)
-            small_radius = max(size_x, size_y, size_z) * random.uniform(0.08, 0.18)
-            
+            cx = random.uniform(min_x+size_x*edge, max_x-size_x*edge)
+            cy = random.uniform(min_y+size_y*edge, max_y-size_y*edge)
+            cz = random.uniform(min_z+size_z*edge, max_z-size_z*edge)
+            small_radius = max(size_x, size_y, size_z)*random.uniform(0.08,0.18)
             for entry in vert_entries:
                 idx, x, y, z = entry
-                dx = x - cx; dy = y - cy; dz = z - cz
-                dist = (dx*dx + dy*dy + dz*dz) ** 0.5
-                
+                dx, dy, dz = x-cx, y-cy, z-cz
+                dist = (dx*dx+dy*dy+dz*dz)**0.5
                 if dist < small_radius and not is_edge(x, y, z):
-                    force = min((1 - dist/small_radius) * intensity * 0.5 * random.uniform(0.5, 1.5), max_push)
+                    force = min((1-dist/small_radius)*intensity*0.5*random.uniform(0.5,1.5), max_push)
                     self._push_vertex(lines, idx, x, y, z, force, push_axis)
         
         out_path = self.output_dir / f"{Path(obj_path).stem}_damaged.obj"
-        with open(out_path, 'w') as f:
-            f.write('\n'.join(lines))
-        
-        return out_path, 1 + num_dents, main_damaged
+        with open(out_path, 'w') as f: f.write('\n'.join(lines))
+        return out_path, 1+num_dents, main_damaged
     
     def _push_vertex(self, lines, idx, x, y, z, force, axis):
-        new_x, new_y, new_z = x, y, z
         if axis == 'x':
-            new_x = x - force if x > 0 else x + force
-            new_y = y + random.uniform(-force*0.2, force*0.2)
-            new_z = z + random.uniform(-force*0.2, force*0.2)
+            new_x = x-force if x>0 else x+force
+            new_y = y+random.uniform(-force*0.2, force*0.2)
+            new_z = z+random.uniform(-force*0.2, force*0.2)
         elif axis == 'y':
-            new_y = y - force
-            new_x = x + random.uniform(-force*0.2, force*0.2)
-            new_z = z + random.uniform(-force*0.2, force*0.2)
+            new_y = y-force
+            new_x = x+random.uniform(-force*0.2, force*0.2)
+            new_z = z+random.uniform(-force*0.2, force*0.2)
         else:
-            new_z = z - force
-            new_x = x + random.uniform(-force*0.2, force*0.2)
-            new_y = y + random.uniform(-force*0.2, force*0.2)
+            new_z = z-force
+            new_x = x+random.uniform(-force*0.2, force*0.2)
+            new_y = y+random.uniform(-force*0.2, force*0.2)
         lines[idx] = f"v {new_x:.6f} {new_y:.6f} {new_z:.6f}"
 
     def generate_xml(self, car_name, obj_name, texture_names):
@@ -193,7 +173,6 @@ def send_subscription_message(chat_id):
     bot.send_message(chat_id, "🔒 Подпишитесь\n" + CHANNEL_URL, reply_markup=markup)
 
 def send_agreement(chat_id):
-    """Отправляет соглашение перед использованием бота"""
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
         types.InlineKeyboardButton("✅ Принимаю", callback_data="agree_yes"),
@@ -206,6 +185,20 @@ def send_agreement(chat_id):
         "2. Не нарушаете авторские права третьих лиц\n"
         "3. Используете бот только для личных модов\n"
         "4. Понимаете что бот изменяет геометрию безвозвратно\n\n"
+        "✅ *Можно редактировать:*\n"
+        "• Модели из GTA San Andreas (одиночная игра)\n"
+        "• Модели из GTA V (одиночная игра)\n"
+        "• Модели с LibertyCity, GTA5-Mods\n"
+        "• Модели из BeamNG.drive\n"
+        "• Модели из CRMP (с разрешения сервера)\n"
+        "• Собственноручно созданные модели\n\n"
+        "⚠️ *Редактирование моделей из Black Russia:*\n"
+        "• Запрещено правилами игры\n"
+        "• Может привести к бану аккаунта\n"
+        "• Делаете на свой страх и риск\n\n"
+        "🛡 *Ответственность:*\n"
+        "Вся ответственность за использование бота\n"
+        "лежит на пользователе.\n\n"
         "Нажимая «✅ Принимаю», вы соглашаетесь с условиями."
     ), parse_mode="Markdown", reply_markup=markup)
 
@@ -250,62 +243,45 @@ def process_damage(uid, cid, level='medium'):
     }
     
     s = settings.get(level, settings['medium'])
-    
-    print(f"[DAMAGE] Пользователь {uid} запросил повреждения: {s['label']}")
+    print(f"[DAMAGE] Пользователь {uid} запросил: {s['label']}")
     
     status_msg = bot.send_message(cid, f"🤔 Анализирую геометрию...\nПрогресс: 0%")
     
     def process():
         time.sleep(0.5)
         fp = user_files[uid][-1]
-        ext = Path(fp).suffix.lower()
-        if ext != '.obj':
-            bot.send_message(uid, "❌ Нужен .obj файл.")
-            return
+        if Path(fp).suffix.lower() != '.obj':
+            bot.send_message(uid, "❌ Нужен .obj файл."); return
         try:
             damaged, total_dents, main_verts = converter.damage_obj(fp, intensity=s['intensity'], num_dents=s['dents'])
             if damaged:
-                with open(damaged, 'rb') as f:
-                    bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']}")
-                
+                with open(damaged, 'rb') as f: bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']}")
                 print(f"[DAMAGE] Пользователь {uid} получил: {Path(damaged).name}, вмятин: {total_dents}")
-                
                 bot.send_message(uid, (
-                    f"📊 *Отчёт о повреждениях*\n\n"
+                    f"📊 *Отчёт*\n\n"
                     f"▫️ Уровень: {s['label']}\n"
                     f"▫️ Вмятин: {total_dents}\n"
                     f"▫️ Задето вершин: ~{main_verts}\n"
                     f"▫️ Края: НЕ задеты\n\n"
-                    f"📁 *Файл:* `{Path(damaged).name}`\n\n"
+                    f"📁 *Файл:* `{Path(damaged).name}`\n"
                     f"💡 ZModeler → Export .dff → готово"
                 ), parse_mode="Markdown")
         except Exception as e:
-            print(f"[ERROR] Повреждение для {uid}: {e}")
+            print(f"[ERROR] {uid}: {e}")
             bot.send_message(uid, f"❌ Ошибка: {e}")
     
     threading.Thread(target=process).start()
     send_progress(cid, status_msg.message_id, f"🔧 Наношу {s['label'].lower()}...", 3)
     try: bot.edit_message_text("✅ Готово!", cid, status_msg.message_id)
     except: pass
-    bot.send_message(cid, f"✅ Готово!", reply_markup=get_menu_keyboard())
+    bot.send_message(cid, "✅ Готово!", reply_markup=get_menu_keyboard())
 
 INSTRUCTION = (
     "🔧 *Бот для модов Black Russia*\n\n"
-    "🎨 *Конвертировать:*\n"
-    "• PNG → BTX (сжатый, 512x512)\n\n"
-    "🚗 *Повредить:*\n"
-    "• Отправьте ОДИН .obj файл детали\n"
-    "• Выберите уровень:\n"
-    "   🤏 Мелкие царапины (5см)\n"
-    "   💪 Средние вмятины (15см)\n"
-    "   💥 Сильная авария (30см)\n"
-    "   🔥 Полный хлам (50см)\n"
-    "• Края НЕ задеваются\n"
-    "• Бот работает с последним файлом\n\n"
-    "📄 *Создать XML:*\n"
-    "• Для упаковки мода в BR\n\n"
-    "🗑 *Очистить:*\n"
-    "• Удаляет все файлы\n\n"
+    "🎨 *Конвертировать:* PNG → BTX\n"
+    "🚗 *Повредить:* отправьте .obj детали\n"
+    "📄 *Создать XML:* для упаковки мода\n"
+    "🗑 *Очистить:* удалить все файлы\n"
     "🆘 *Техподдержка:* @brmodels013\n\n"
     "📂 Отправьте файл и выберите действие"
 )
@@ -314,18 +290,14 @@ INSTRUCTION = (
 def start(msg):
     uid = msg.from_user.id
     username = msg.from_user.username or "нет username"
-    first_name = msg.from_user.first_name or "нет имени"
-    
-    print(f"[START] Пользователь {uid} (@{username}, {first_name}) запустил бота")
+    print(f"[START] Пользователь {uid} (@{username})")
     
     if not check_subscription(uid):
-        print(f"[BLOCK] Пользователь {uid} не подписан на канал")
-        send_subscription_message(msg.chat.id)
-        return
+        print(f"[BLOCK] {uid} не подписан")
+        send_subscription_message(msg.chat.id); return
     
     if uid not in user_agreed or not user_agreed[uid]:
-        send_agreement(msg.chat.id)
-        return
+        send_agreement(msg.chat.id); return
     
     user_files[uid] = []
     user_damage_level[uid] = 'medium'
@@ -340,17 +312,14 @@ def agreement_callback(call):
         user_agreed[uid] = True
         user_files[uid] = []
         user_damage_level[uid] = 'medium'
-        
         print(f"[AGREEMENT] Пользователь {uid} (@{username}) ПРИНЯЛ соглашение")
-        
         bot.answer_callback_query(call.id, "✅ Соглашение принято!")
         bot.edit_message_text("✅ Доступ открыт!", call.message.chat.id, call.message.message_id)
         bot.send_message(call.message.chat.id, INSTRUCTION, parse_mode="Markdown", reply_markup=get_menu_keyboard())
     else:
-        print(f"[AGREEMENT] Пользователь {uid} (@{username}) ОТКАЗАЛСЯ от соглашения")
-        
+        print(f"[AGREEMENT] Пользователь {uid} (@{username}) ОТКАЗАЛСЯ")
         bot.answer_callback_query(call.id, "❌ Доступ запрещён", show_alert=True)
-        bot.edit_message_text("❌ Вы отказались от соглашения. Бот недоступен.", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text("❌ Вы отказались. Бот недоступен.", call.message.chat.id, call.message.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_sub")
 def check_sub_callback(call):
@@ -364,34 +333,20 @@ def check_sub_callback(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("dmg_"))
 def damage_level_callback(call):
     uid = call.from_user.id
-    
     if uid not in user_agreed or not user_agreed[uid]:
-        bot.answer_callback_query(call.id, "❌ Примите соглашение /start", show_alert=True)
-        return
+        bot.answer_callback_query(call.id, "❌ Примите соглашение /start", show_alert=True); return
     
     level = call.data.replace("dmg_", "")
-    user_damage_level[uid] = level
-    
-    labels = {
-        'light': '🤏 Мелкие (5см)', 
-        'medium': '💪 Средние (15см)', 
-        'hard': '💥 Авария (30см)', 
-        'extreme': '🔥 Хлам (50см)'
-    }
-    bot.answer_callback_query(call.id, f"Выбрано: {labels.get(level, 'Средние')}")
-    bot.edit_message_text(f"✅ {labels.get(level, 'Средние')}\nНачинаю...", call.message.chat.id, call.message.message_id)
-    
+    labels = {'light':'🤏 Мелкие','medium':'💪 Средние','hard':'💥 Авария','extreme':'🔥 Хлам'}
+    bot.answer_callback_query(call.id, f"Выбрано: {labels.get(level)}")
+    bot.edit_message_text(f"✅ {labels.get(level)}\nНачинаю...", call.message.chat.id, call.message.message_id)
     process_damage(uid, call.message.chat.id, level)
 
 @bot.message_handler(content_types=['document'])
 def handle_file(msg):
     uid = msg.from_user.id
-    
-    if not check_subscription(uid):
-        send_subscription_message(msg.chat.id); return
-    
-    if uid not in user_agreed or not user_agreed[uid]:
-        send_agreement(msg.chat.id); return
+    if not check_subscription(uid): send_subscription_message(msg.chat.id); return
+    if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
     
     file_info = bot.get_file(msg.document.file_id)
     downloaded = bot.download_file(file_info.file_path)
@@ -414,42 +369,33 @@ def handle_file(msg):
 @bot.message_handler(func=lambda msg: msg.text == "🔍 Анализ")
 def analyze_cmd(msg):
     uid = msg.from_user.id
-    if uid not in user_agreed or not user_agreed[uid]:
-        send_agreement(msg.chat.id); return
+    if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
     if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Нет файлов."); return
     for fp in user_files[uid]:
         if not os.path.exists(fp): continue
         info = analyze_file(fp)
         if info:
-            text = f"📊 {os.path.basename(fp)}\n\nВершин: {info['verts']}\nПолигонов: {info['faces']}\nUV: {info['uvs']}\nРазмер: {info['size_kb']} КБ\n{info['verdict']}"
-            bot.reply_to(msg, text)
+            bot.reply_to(msg, f"📊 {os.path.basename(fp)}\n\nВершин: {info['verts']}\nПолигонов: {info['faces']}\n{info['verdict']}")
 
 @bot.message_handler(func=lambda msg: msg.text == "🎨 Конвертировать")
 def convert_cmd(msg):
     uid = msg.from_user.id
-    if uid not in user_agreed or not user_agreed[uid]:
-        send_agreement(msg.chat.id); return
-    if uid not in user_files or not user_files[uid]: 
-        bot.reply_to(msg, "Нет файлов. Отправьте PNG."); return
+    if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
+    if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Нет файлов."); return
     for fp in user_files[uid].copy():
         try:
-            ext = Path(fp).suffix.lower()
-            if ext == '.png':
+            if Path(fp).suffix.lower() == '.png':
                 btx = converter._png_to_btx(fp)
                 if btx:
-                    print(f"[CONVERT] Пользователь {uid}: PNG → BTX ({Path(btx).name})")
-                    with open(btx, 'rb') as f: 
-                        bot.send_document(uid, f, caption="BTX")
-        except Exception as e: 
-            print(f"[ERROR] Конвертация для {uid}: {e}")
-            bot.send_message(uid, f"Ошибка: {e}")
+                    print(f"[CONVERT] {uid}: PNG → BTX")
+                    with open(btx, 'rb') as f: bot.send_document(uid, f, caption="BTX")
+        except Exception as e: bot.send_message(uid, f"Ошибка: {e}")
     bot.send_message(uid, "✅ Готово!", reply_markup=get_menu_keyboard())
 
 @bot.message_handler(func=lambda msg: msg.text == "🚗 Повредить")
 def damage_cmd(msg):
     uid = msg.from_user.id
-    if uid not in user_agreed or not user_agreed[uid]:
-        send_agreement(msg.chat.id); return
+    if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
     if uid not in user_files or not user_files[uid]:
         bot.reply_to(msg, INSTRUCTION, parse_mode="Markdown"); return
     bot.reply_to(msg, "💥 *Выберите уровень:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
@@ -457,18 +403,16 @@ def damage_cmd(msg):
 @bot.message_handler(func=lambda msg: msg.text == "📄 Создать XML")
 def xml_cmd(msg):
     uid = msg.from_user.id
-    if uid not in user_agreed or not user_agreed[uid]:
-        send_agreement(msg.chat.id); return
+    if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
     if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Нет файлов."); return
-    obj_file = None
-    png_names = []
+    obj_file = None; png_names = []
     for fp in user_files[uid]:
         ext = Path(fp).suffix.lower()
         if ext == '.obj': obj_file = fp
         elif ext == '.png': png_names.append(Path(fp).stem)
     if not obj_file: bot.reply_to(msg, "❌ Нужен .obj"); return
     xml_path = converter.generate_xml(Path(obj_file).stem, os.path.basename(obj_file), png_names)
-    print(f"[XML] Пользователь {uid} создал XML: {Path(xml_path).name}")
+    print(f"[XML] {uid}: {Path(xml_path).name}")
     with open(xml_path, 'rb') as f: bot.send_document(uid, f, caption="XML")
     user_files[uid] = []
     bot.send_message(uid, "✅ XML создан!", reply_markup=get_menu_keyboard())
@@ -476,7 +420,7 @@ def xml_cmd(msg):
 @bot.message_handler(func=lambda msg: msg.text == "🆘 Техподдержка")
 def support_cmd(msg):
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("📩 Написать в ЛС", url=f"https://t.me/{SUPPORT_USERNAME.replace('@', '')}"))
+    markup.add(types.InlineKeyboardButton("📩 Написать в ЛС", url=f"https://t.me/{SUPPORT_USERNAME.replace('@','')}"))
     bot.reply_to(msg, f"По вопросам: {SUPPORT_USERNAME}", reply_markup=markup)
 
 @bot.message_handler(func=lambda msg: msg.text == "🗑 Очистить")
@@ -493,8 +437,7 @@ def clear_cmd(msg):
 def any_msg(msg):
     uid = msg.from_user.id
     if not check_subscription(uid): send_subscription_message(msg.chat.id); return
-    if uid not in user_agreed or not user_agreed[uid]:
-        send_agreement(msg.chat.id); return
+    if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
     text = msg.text.lower()
     if any(w in text for w in ['помни', 'повреди', 'вмятина', 'дверь', 'двери']):
         if uid not in user_files or not user_files[uid]:
