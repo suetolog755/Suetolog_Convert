@@ -133,7 +133,7 @@ class FullModelConverter:
     def __init__(self):
         self.output_dir = Path("converted_output")
         self.temp_dir = Path("temp_processing")
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(exist_ok=True, parents=True)
         self.temp_dir.mkdir(exist_ok=True, parents=True)
 
     def _clean_temp(self):
@@ -189,7 +189,6 @@ class FullModelConverter:
         if not vertices:
             return None
         
-        # Упрощаем только если реально много
         if len(faces) > 50000:
             ratio = 50000 / len(faces)
             target_verts = max(3000, int(len(vertices) * ratio))
@@ -267,6 +266,9 @@ class FullModelConverter:
     def dae_to_obj(self, dae_path):
         try:
             self._clean_temp()
+            self.output_dir.mkdir(exist_ok=True, parents=True)
+            self.temp_dir.mkdir(exist_ok=True, parents=True)
+            
             inp = Path(dae_path)
             
             if not inp.exists():
@@ -334,7 +336,6 @@ class FullModelConverter:
             if not faces:
                 raise Exception(f"Граней: 0")
 
-            # Не упрощаем — сохраняем детали для машины
             while len(uvs) < len(vertices):
                 uvs.append([0.0, 0.0])
 
@@ -348,7 +349,12 @@ class FullModelConverter:
                     f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
             
             final_obj = self.output_dir / obj_path.name
-            shutil.copy(obj_path, final_obj)
+            if final_obj.exists():
+                final_obj.unlink()
+            shutil.copy(str(obj_path), str(final_obj))
+            
+            if not final_obj.exists():
+                raise Exception(f"Не удалось сохранить: {final_obj}")
             
             zip_path = None
             if self._has_textures(inp.parent):
