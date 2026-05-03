@@ -161,63 +161,6 @@ class FullModelConverter:
         
         return new_vertices, new_uvs, new_faces
 
-    def _dae_to_obj(self, dae_path):
-        try:
-            tree = ET.parse(dae_path)
-            root = tree.getroot()
-            
-            ns = 'http://www.collada.org/2005/11/COLLADASchema'
-            obj_path = self.temp_dir / f"{Path(dae_path).stem}.obj"
-            vertices, uvs, faces = [], [], []
-            
-            for mesh in root.iter(f'{{{ns}}}mesh'):
-                positions = None
-                uvs_data = None
-                
-                for source in mesh.findall(f'{{{ns}}}source'):
-                    sid = source.get('id', '')
-                    float_array = source.find(f'{{{ns}}}float_array')
-                    if float_array is not None and float_array.text:
-                        data = list(map(float, float_array.text.strip().split()))
-                        if 'positions' in sid:
-                            positions = [[data[i], data[i+1], data[i+2]] for i in range(0, len(data), 3)]
-                        elif 'map' in sid.lower() or 'uv' in sid.lower():
-                            uvs_data = [[data[i], data[i+1]] for i in range(0, len(data), 2)]
-                
-                if positions:
-                    start_idx = len(vertices)
-                    vertices.extend(positions)
-                    if uvs_data:
-                        uvs.extend(uvs_data)
-                    
-                    for triangles in mesh.findall(f'{{{ns}}}triangles'):
-                        p_elems = triangles.findall(f'{{{ns}}}p')
-                        if p_elems and p_elems[0].text:
-                            indices = list(map(int, p_elems[0].text.strip().split()))
-                            for i in range(0, len(indices), 3):
-                                if i + 2 < len(indices):
-                                    faces.append([indices[i]+start_idx, indices[i+1]+start_idx, indices[i+2]+start_idx])
-
-            if not vertices or not faces:
-                raise ValueError(f"Не найдена геометрия в DAE: {len(vertices)} вершин, {len(faces)} граней")
-
-            vertices, uvs, faces = self._simplify_model(vertices, uvs, faces)
-            
-            while len(uvs) < len(vertices):
-                uvs.append([0.0, 0.0])
-
-            with open(obj_path, 'w') as f:
-                for v in vertices:
-                    f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
-                for vt in uvs:
-                    f.write(f"vt {vt[0]:.6f} {vt[1]:.6f}\n")
-                for face in faces:
-                    f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
-            
-            return obj_path
-        except Exception as e:
-            raise Exception(f"Ошибка парсинга DAE: {str(e)}")
-
     def _obj_simplify(self, obj_path):
         vertices, uvs, faces = [], [], []
         
@@ -309,19 +252,105 @@ class FullModelConverter:
         return zip_path
 
     def dae_to_obj(self, dae_path):
-        self._clean_temp()
-        inp = Path(dae_path)
-        obj_path = self._dae_to_obj(inp)
-        if obj_path is None:
-            return None, None
-        final_obj = self.output_dir / obj_path.name
-        shutil.copy(obj_path, final_obj)
-        if self._has_textures(inp.parent):
-            png_files = self._extract_textures_to_png(inp.parent)
-            if png_files:
-                zip_path = self._pack_to_zip(png_files, inp.stem)
-                return final_obj, zip_path
-        return final_obj, None
+        try:
+            self._clean_temp()
+            inp = Path(dae_path)
+            
+            if not inp.exists():
+                raise Exception(f"Файл не найден: {dae_path}")
+            
+            try:
+                tree = ET.parse(dae_path)
+                root = tree.getroot()
+            except Exception as e:
+                raise Exception(f"Не удалось прочитать XML: {str(e)[:100]}")
+            
+            ns = 'http://www.collada.org/2005/11/COLLADASchema'
+            meshes = list(root.iter(f'{{{ns}}}mesh'))
+            if not meshes:
+                meshes = list(root.iter('mesh'))
+                if not meshes:
+                    raise Exception(f"Не найдено ни одного mesh в файле")
+            
+            vertices, uvs, faces = [], [], []
+            
+            for mesh in meshes:
+                positions = None
+                uvs_data = None
+                
+                for source in mesh.findall(f'{{{ns}}}source'):
+                    sid = source.get('id', '')
+                    float_array = source.find(f'{{{ns}}}float_array')
+                    if float_array is not None and float_array.text and float_array.text.strip():
+                        data = list(map(float, float_array.text.strip().split()))
+                        if 'positions' in sid:
+                            positions = [[data[i], data[i+1], data[i+2]] for i in range(0, len(data), 3)]
+                        elif 'map' in sid.lower() or 'uv' in sid.lower():
+                            uvs_data = [[data[i], data[i+1]] for i in range(0, len(data), 2)]
+                
+                if positions:
+                    start_idx = len(vertices)
+                    vertices.extend(positions)
+                    if uvs_data:
+                        uvs.extend(uvs_data)
+                    
+                    for triangles in mesh.findall(f'{{{ns}}}triangles'):
+                        p_elems = triangles.findall(f'{{{ns}}}p')
+                        if p_elems and p_elems[0].text and p_elems[0].text.strip():
+                            indices = list(map(int, p_elems[0].text.strip().split()))
+                            for i in range(0, len(indices), 3):
+                                if i + 2 < len(indices):
+                                    faces.append([indices[i]+start_idx, indices[i+1]+start_idx, indices[i+2]+start_idx])
+
+            if not vertices:
+                raise Exception(f"Вершин: 0 (positions не найдены)")
+            if not faces:
+                raise Exception(f"Граней: 0 (triangles не найдены)")
+
+            if len(vertices) > 60000:
+                step = len(vertices) / 60000
+                old_to_new = {}
+                new_vertices = []
+                new_uvs = []
+                i = 0.0
+                while i < len(vertices):
+                    idx = int(i)
+                    old_to_new[idx] = len(new_vertices)
+                    new_vertices.append(vertices[idx])
+                    if idx < len(uvs):
+                        new_uvs.append(uvs[idx])
+                    i += step
+                new_faces = []
+                for face in faces:
+                    if all(v in old_to_new for v in face):
+                        new_faces.append([old_to_new[v] for v in face])
+                vertices, uvs, faces = new_vertices, new_uvs, new_faces
+            
+            while len(uvs) < len(vertices):
+                uvs.append([0.0, 0.0])
+
+            obj_path = self.temp_dir / f"{inp.stem}.obj"
+            with open(obj_path, 'w') as f:
+                for v in vertices:
+                    f.write(f"v {v[0]} {v[1]} {v[2]}\n")
+                for vt in uvs:
+                    f.write(f"vt {vt[0]} {vt[1]}\n")
+                for face in faces:
+                    f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
+            
+            final_obj = self.output_dir / obj_path.name
+            shutil.copy(obj_path, final_obj)
+            
+            zip_path = None
+            if self._has_textures(inp.parent):
+                png_files = self._extract_textures_to_png(inp.parent)
+                if png_files:
+                    zip_path = self._pack_to_zip(png_files, inp.stem)
+            
+            return final_obj, zip_path
+            
+        except Exception as e:
+            raise Exception(f"Ошибка: {str(e)}")
 
 
 converter = FullModelConverter()
@@ -367,8 +396,7 @@ def start(msg):
         "🎨 PNG → BTX (сжатый, 512x512)\n"
         "📦 .dae → .obj (авто-упрощение)\n"
         "🧩 .obj → .obj (авто-упрощение)\n"
-        "🔧 .dff → .obj (если нужна конвертация)\n"
-        "🔧 .3ds → .obj (если нужна конвертация)\n"
+        "🔧 .dff / .3ds → проверка\n"
         "🔍 AI-анализ + советы\n\n"
         "📂 Отправьте файл → ✅ Конвертировать\n\n"
         "Канал: @brmodels095"
@@ -491,22 +519,20 @@ def convert_cmd(msg):
                         bot.send_document(uid, f, caption=f"BTX: {Path(btx).name}")
 
             elif ext == '.dae':
-                bot.send_message(uid, f"Конвертирую DAE в OBJ...")
+                bot.send_message(uid, f"⏳ Конвертирую DAE...")
                 try:
                     obj_file, zip_file = converter.dae_to_obj(fpath)
-                    if obj_file:
+                    if obj_file and os.path.exists(obj_file):
                         with open(obj_file, 'rb') as f:
                             bot.send_document(uid, f, caption="OBJ (из DAE)")
                         new_info = analyze_file(str(obj_file))
                         if new_info:
-                            bot.send_message(uid, f"После конвертации: {new_info['verts']} вершин\nВердикт: {new_info['verdict']}")
-                    if zip_file:
+                            bot.send_message(uid, f"Готово! Вершин: {new_info['verts']}, граней: {new_info['faces']}")
+                    if zip_file and os.path.exists(zip_file):
                         with open(zip_file, 'rb') as f:
                             bot.send_document(uid, f, caption="Текстуры ZIP")
-                    if not obj_file:
-                        bot.send_message(uid, f"Не удалось конвертировать: {fname}\nВозможная причина: файл повреждён или не содержит геометрии.")
                 except Exception as e_dae:
-                    bot.send_message(uid, f"Ошибка при конвертации DAE: {str(e_dae)[:200]}")
+                    bot.send_message(uid, f"❌ {str(e_dae)[:300]}")
 
             elif ext == '.dff':
                 bot.send_message(uid, f"✅ {fname} — DFF файл. ZModeler его открывает. Конвертация не требуется.")
