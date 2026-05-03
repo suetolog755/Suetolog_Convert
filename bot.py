@@ -86,82 +86,55 @@ class FullModelConverter:
 
     def damage_obj(self, obj_path, intensity=0.15, num_dents=8):
         """
-        Создаёт ВМЯТИНЫ по нормалям.
-        intensity: глубина (0.05=слабо, 0.15=средне, 0.30=сильно)
-        num_dents: количество вмятин
+        ТУПО ВДАВЛИВАЕТ ВЕРШИНЫ ВНУТРЬ ПО ОСИ X (для дверей).
         """
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.read().split('\n')
         
-        # Собираем вершины и грани
-        verts = []
-        vert_indices = []
-        faces = []
-        
+        vert_entries = []
         for i, line in enumerate(lines):
             if line.startswith('v ') and not line.startswith('vt ') and not line.startswith('vn '):
                 parts = line.strip().split()
                 if len(parts) >= 4:
-                    verts.append([float(parts[1]), float(parts[2]), float(parts[3])])
-                    vert_indices.append(i)
-            elif line.startswith('f '):
-                parts = line.strip().split()
-                face = []
-                for p in parts[1:]:
-                    idx = int(p.split('/')[0]) - 1
-                    if 0 <= idx < len(verts): face.append(idx)
-                if len(face) == 3: faces.append(face)
+                    try:
+                        vert_entries.append([i, float(parts[1]), float(parts[2]), float(parts[3])])
+                    except: pass
         
-        if len(verts) < 10: return None, 0
+        if len(vert_entries) < 10:
+            return None, 0
         
-        # Вычисляем нормали
-        vertex_normals = [[0.0, 0.0, 0.0] for _ in verts]
-        for face in faces:
-            if len(face) != 3: continue
-            v0, v1, v2 = verts[face[0]], verts[face[1]], verts[face[2]]
-            e1 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]]
-            e2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]]
-            nx = e1[1]*e2[2] - e1[2]*e2[1]
-            ny = e1[2]*e2[0] - e1[0]*e2[2]
-            nz = e1[0]*e2[1] - e1[1]*e2[0]
-            length = (nx*nx + ny*ny + nz*nz) ** 0.5
-            if length > 0: nx /= length; ny /= length; nz /= length
-            for fi in face:
-                vertex_normals[fi][0] += nx
-                vertex_normals[fi][1] += ny
-                vertex_normals[fi][2] += nz
-        
-        for i in range(len(vertex_normals)):
-            n = vertex_normals[i]
-            length = (n[0]**2 + n[1]**2 + n[2]**2) ** 0.5
-            if length > 0: n[0] /= length; n[1] /= length; n[2] /= length
-        
-        # Создаём вмятины
-        all_x = [v[0] for v in verts]
+        all_x = [v[1] for v in vert_entries]
         det_size = max(all_x) - min(all_x)
         
         for _ in range(num_dents):
-            ri = random.randint(0, len(verts)-1)
-            cx, cy, cz = verts[ri]
-            radius = det_size * random.uniform(0.1, 0.3)
+            ri = random.randint(0, len(vert_entries)-1)
+            cx, cy, cz = vert_entries[ri][1], vert_entries[ri][2], vert_entries[ri][3]
+            radius = det_size * random.uniform(0.2, 0.5)
             
-            for i, v in enumerate(verts):
-                dx = v[0] - cx
-                dy = v[1] - cy
-                dz = v[2] - cz
+            for entry in vert_entries:
+                idx, x, y, z = entry
+                dx = x - cx
+                dy = y - cy
+                dz = z - cz
                 dist = (dx*dx + dy*dy + dz*dz) ** 0.5
                 
-                if dist < radius:
-                    force = (1 - dist/radius) * intensity
-                    nx, ny, nz = vertex_normals[i]
-                    new_x = v[0] - nx * force
-                    new_y = v[1] - ny * force
-                    new_z = v[2] - nz * force
-                    verts[i] = [new_x, new_y, new_z]
-                    lines[vert_indices[i]] = f"v {new_x:.6f} {new_y:.6f} {new_z:.6f}"
+                if dist < radius and abs(x) > 0.01:
+                    force = (1 - dist/radius) * intensity * random.uniform(0.5, 1.5)
+                    
+                    if x > 0:
+                        new_x = x - force
+                    else:
+                        new_x = x + force
+                    
+                    new_y = y + random.uniform(-force*0.3, force*0.3)
+                    new_z = z + random.uniform(-force*0.3, force*0.3)
+                    
+                    lines[idx] = f"v {new_x:.6f} {new_y:.6f} {new_z:.6f}"
         
         out_path = self.output_dir / f"{Path(obj_path).stem}_damaged.obj"
-        with open(out_path, 'w') as f: f.write('\n'.join(lines))
+        with open(out_path, 'w') as f:
+            f.write('\n'.join(lines))
+        
         return out_path, num_dents
 
     def generate_xml(self, car_name, obj_name, texture_names):
@@ -209,7 +182,7 @@ def get_damage_level_keyboard():
         types.InlineKeyboardButton("🤏 Слабо (5см)", callback_data="dmg_light"),
         types.InlineKeyboardButton("💪 Средне (15см)", callback_data="dmg_medium"),
         types.InlineKeyboardButton("💥 Сильно (30см)", callback_data="dmg_hard"),
-        types.InlineKeyboardButton("🔥 Очень сильно (50см)", callback_data="dmg_extreme")
+        types.InlineKeyboardButton("🔥 Хлам (50см)", callback_data="dmg_extreme")
     )
     return markup
 
@@ -228,7 +201,7 @@ def process_damage(uid, cid, level='medium'):
         'light':   {'intensity': 0.05, 'dents': 4,  'label': 'Слабые', 'icon': '🤏'},
         'medium':  {'intensity': 0.15, 'dents': 8,  'label': 'Средние', 'icon': '💪'},
         'hard':    {'intensity': 0.30, 'dents': 12, 'label': 'Сильные', 'icon': '💥'},
-        'extreme': {'intensity': 0.50, 'dents': 16, 'label': 'Очень сильные', 'icon': '🔥'}
+        'extreme': {'intensity': 0.50, 'dents': 16, 'label': 'Хлам', 'icon': '🔥'}
     }
     
     s = settings.get(level, settings['medium'])
@@ -298,7 +271,7 @@ def damage_level_callback(call):
     level = call.data.replace("dmg_", "")
     user_damage_level[uid] = level
     
-    labels = {'light': '🤏 Слабо', 'medium': '💪 Средне', 'hard': '💥 Сильно', 'extreme': '🔥 Очень сильно'}
+    labels = {'light': '🤏 Слабо', 'medium': '💪 Средне', 'hard': '💥 Сильно', 'extreme': '🔥 Хлам'}
     bot.answer_callback_query(call.id, f"Выбрано: {labels.get(level, 'Средне')}")
     bot.edit_message_text(f"✅ Уровень: {labels.get(level, 'Средне')}\nНачинаю повреждения...", call.message.chat.id, call.message.message_id)
     
