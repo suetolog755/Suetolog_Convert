@@ -54,12 +54,6 @@ def analyze_file(file_path):
             except:
                 pass
         
-        elif ext == '.dff':
-            pass
-        
-        elif ext == '.3ds':
-            pass
-        
         issues = []
         warnings = []
         import_support = "Поддерживается"
@@ -114,17 +108,13 @@ def get_advisor_tips(info):
     
     if ext == '.dae':
         tips.append("ZModeler не открывает .dae. Нажми Конвертировать.")
-    elif ext == '.dff':
-        tips.append("DFF открывается в ZModeler. Конвертация не требуется.")
-    elif ext == '.3ds':
-        tips.append("3DS открывается. После импорта проверь текстуры.")
     elif ext == '.obj':
         if verts <= 65535 and faces <= 50000 and verts > 0:
-            tips.append("Машина готова к импорту в ZModeler.")
+            tips.append("Готово для ZModeler. Нажми Конвертировать для DFF.")
         elif faces > 50000:
-            tips.append("Слишком много полигонов. Нажми Конвертировать для упрощения.")
+            tips.append("Много полигонов. Бот упростит и сделает DFF.")
         elif verts > 65535:
-            tips.append("Слишком много вершин. Нажми Конвертировать для упрощения.")
+            tips.append("Много вершин. Бот упростит и сделает DFF.")
     
     return tips
 
@@ -141,75 +131,91 @@ class FullModelConverter:
             shutil.rmtree(self.temp_dir, ignore_errors=True)
         self.temp_dir.mkdir(exist_ok=True, parents=True)
 
-    def _simplify_model(self, vertices, uvs, faces, max_verts=60000):
-        if len(vertices) <= max_verts:
-            return vertices, uvs, faces
-        
-        step = len(vertices) / max_verts
-        old_to_new = {}
-        new_vertices = []
-        new_uvs = []
-        
-        i = 0.0
-        while i < len(vertices):
-            idx = int(i)
-            old_to_new[idx] = len(new_vertices)
-            new_vertices.append(vertices[idx])
-            if idx < len(uvs):
-                new_uvs.append(uvs[idx])
-            i += step
-        
-        new_faces = []
-        for face in faces:
-            if all(v in old_to_new for v in face):
-                new_faces.append([old_to_new[v] for v in face])
-        
-        return new_vertices, new_uvs, new_faces
-
-    def _obj_simplify(self, obj_path):
-        vertices, uvs, faces = [], [], []
-        
-        with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                if line.startswith('v '):
-                    parts = line.strip().split()
-                    vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
-                elif line.startswith('vt '):
-                    parts = line.strip().split()
-                    uvs.append([float(parts[1]), float(parts[2])])
-                elif line.startswith('f '):
-                    parts = line.strip().split()
-                    face = []
-                    for p in parts[1:]:
-                        idx = int(p.split('/')[0]) - 1
-                        face.append(idx)
-                    if len(face) == 3:
-                        faces.append(face)
-        
-        if not vertices:
-            return None
-        
-        if len(faces) > 50000:
-            ratio = 50000 / len(faces)
-            target_verts = max(3000, int(len(vertices) * ratio))
-            vertices, uvs, faces = self._simplify_model(vertices, uvs, faces, target_verts)
-        elif len(vertices) > 60000:
-            vertices, uvs, faces = self._simplify_model(vertices, uvs, faces, 60000)
-        else:
-            return None
-        
-        while len(uvs) < len(vertices):
-            uvs.append([0.0, 0.0])
-        
-        out_path = self.output_dir / Path(obj_path).name
-        with open(out_path, 'w') as f:
-            for v in vertices:
-                f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
-            for vt in uvs:
-                f.write(f"vt {vt[0]:.6f} {vt[1]:.6f}\n")
-            for face in faces:
-                f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
-        return out_path
+    def _obj_to_dff(self, obj_path):
+        """Конвертирует OBJ в DFF через rwfury"""
+        try:
+            from rwfury import DFF, Frame, Geometry, Material, Texture
+            
+            vertices = []
+            faces = []
+            uvs = []
+            
+            with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if line.startswith('v '):
+                        parts = line.strip().split()
+                        vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                    elif line.startswith('vt '):
+                        parts = line.strip().split()
+                        uvs.append([float(parts[1]), float(parts[2])])
+                    elif line.startswith('f '):
+                        parts = line.strip().split()
+                        face = []
+                        for p in parts[1:]:
+                            idx = int(p.split('/')[0]) - 1
+                            face.append(idx)
+                        if len(face) == 3:
+                            faces.append(face)
+            
+            if not vertices or not faces:
+                return None
+            
+            # Упрощение если нужно
+            if len(vertices) > 60000:
+                step = len(vertices) / 60000
+                old_to_new = {}
+                new_vertices = []
+                new_uvs = []
+                i = 0.0
+                while i < len(vertices):
+                    idx = int(i)
+                    old_to_new[idx] = len(new_vertices)
+                    new_vertices.append(vertices[idx])
+                    if idx < len(uvs):
+                        new_uvs.append(uvs[idx])
+                    i += step
+                new_faces = []
+                for face in faces:
+                    if all(v in old_to_new for v in face):
+                        new_faces.append([old_to_new[v] for v in face])
+                vertices, uvs, faces = new_vertices, new_uvs, new_faces
+            
+            while len(uvs) < len(vertices):
+                uvs.append([0.0, 0.0])
+            
+            # Создаём DFF
+            dff = DFF()
+            
+            # Geometry
+            geo = Geometry()
+            geo.vertices = [(v[0], v[1], v[2]) for v in vertices]
+            geo.normals = [(0.0, 0.0, 1.0)] * len(vertices)
+            geo.texcoords = [(uv[0], uv[1]) for uv in uvs[:len(vertices)]]
+            geo.triangles = [(f[0], f[1], f[2]) for f in faces]
+            geo.material_index = 0
+            
+            # Material
+            mat = Material()
+            mat.textured = True
+            mat.texture = Texture()
+            mat.texture.name = "default"
+            mat.texture.mask = "default"
+            
+            # Frame
+            frame = Frame()
+            frame.geometry = geo
+            
+            dff.frames = [frame]
+            dff.materials = [mat]
+            
+            out_path = self.output_dir / f"{Path(obj_path).stem}.dff"
+            dff.write(str(out_path))
+            
+            return out_path
+        except ImportError:
+            raise Exception("rwfury не установлен. pip install rwfury")
+        except Exception as e:
+            raise Exception(f"Ошибка DFF: {str(e)}")
 
     def _png_to_btx(self, png_path, output_name=None):
         png_file = Path(png_path)
@@ -232,140 +238,6 @@ class FullModelConverter:
             f.write(b'\x03')
             f.write(compressed.tobytes())
         return btx_path
-
-    def _has_textures(self, folder):
-        for img in Path(folder).rglob("*"):
-            if img.suffix.lower() in ['.png', '.jpg', '.jpeg', '.tga', '.bmp', '.dds']:
-                return True
-        return False
-
-    def _extract_textures_to_png(self, source_folder):
-        tex_folder = self.temp_dir / "extracted_textures"
-        tex_folder.mkdir(exist_ok=True)
-        png_files = []
-        for img in Path(source_folder).rglob("*"):
-            if img.suffix.lower() in ['.png', '.jpg', '.jpeg', '.tga', '.bmp', '.dds']:
-                try:
-                    im = Image.open(img).convert("RGB")
-                    png_path = tex_folder / f"{img.stem}.png"
-                    im.save(png_path, "PNG")
-                    png_files.append(png_path)
-                except:
-                    pass
-        return png_files
-
-    def _pack_to_zip(self, files, zip_name=None):
-        if zip_name is None:
-            zip_name = "textures"
-        zip_path = self.output_dir / f"{zip_name}.zip"
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for f in files:
-                zf.write(f, Path(f).name)
-        return zip_path
-
-    def dae_to_obj(self, dae_path):
-        try:
-            self._clean_temp()
-            self.output_dir.mkdir(exist_ok=True, parents=True)
-            self.temp_dir.mkdir(exist_ok=True, parents=True)
-            
-            inp = Path(dae_path)
-            
-            if not inp.exists():
-                raise Exception(f"Файл не найден")
-            
-            tree = ET.parse(dae_path)
-            root = tree.getroot()
-            
-            ns = 'http://www.collada.org/2005/11/COLLADASchema'
-            vertices, uvs, faces = [], [], []
-            
-            for mesh in root.iter(f'{{{ns}}}mesh'):
-                positions = None
-                uvs_data = None
-                
-                for source in mesh.findall(f'{{{ns}}}source'):
-                    sid = source.get('id', '')
-                    float_array = source.find(f'{{{ns}}}float_array')
-                    if float_array is not None and float_array.text and float_array.text.strip():
-                        data = list(map(float, float_array.text.strip().split()))
-                        if 'positions' in sid:
-                            positions = [[data[i], data[i+1], data[i+2]] for i in range(0, len(data), 3)]
-                        elif 'map' in sid.lower() or 'uv' in sid.lower():
-                            uvs_data = [[data[i], data[i+1]] for i in range(0, len(data), 2)]
-                
-                if positions:
-                    start_idx = len(vertices)
-                    vertices.extend(positions)
-                    if uvs_data:
-                        uvs.extend(uvs_data)
-                    
-                    found_face = False
-                    for tag_name in ['triangles', 'polylist', 'polygons']:
-                        for elem in mesh.findall(f'{{{ns}}}{tag_name}'):
-                            p_elems = elem.findall(f'{{{ns}}}p')
-                            if p_elems and p_elems[0].text and p_elems[0].text.strip():
-                                indices = list(map(int, p_elems[0].text.strip().split()))
-                                stride = 3
-                                for i in range(0, len(indices), stride):
-                                    if i + 2 < len(indices):
-                                        faces.append([indices[i]+start_idx, indices[i+1]+start_idx, indices[i+2]+start_idx])
-                                found_face = True
-                    
-                    if not found_face:
-                        for tag_name in ['polylist', 'polygons']:
-                            for elem in mesh.findall(f'{{{ns}}}{tag_name}'):
-                                vcount_elem = elem.find(f'{{{ns}}}vcount')
-                                p_elems = elem.findall(f'{{{ns}}}p')
-                                if vcount_elem is not None and p_elems and p_elems[0].text:
-                                    vcounts = list(map(int, vcount_elem.text.strip().split()))
-                                    indices = list(map(int, p_elems[0].text.strip().split()))
-                                    idx_pos = 0
-                                    for vc in vcounts:
-                                        if vc >= 3:
-                                            for j in range(vc - 2):
-                                                faces.append([
-                                                    indices[idx_pos] + start_idx,
-                                                    indices[idx_pos+j+1] + start_idx,
-                                                    indices[idx_pos+j+2] + start_idx
-                                                ])
-                                        idx_pos += vc
-
-            if not vertices:
-                raise Exception(f"Вершин: 0")
-            if not faces:
-                raise Exception(f"Граней: 0")
-
-            while len(uvs) < len(vertices):
-                uvs.append([0.0, 0.0])
-
-            obj_path = self.temp_dir / f"{inp.stem}.obj"
-            with open(obj_path, 'w') as f:
-                for v in vertices:
-                    f.write(f"v {v[0]} {v[1]} {v[2]}\n")
-                for vt in uvs:
-                    f.write(f"vt {vt[0]} {vt[1]}\n")
-                for face in faces:
-                    f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
-            
-            final_obj = self.output_dir / obj_path.name
-            if final_obj.exists():
-                final_obj.unlink()
-            shutil.copy(str(obj_path), str(final_obj))
-            
-            if not final_obj.exists():
-                raise Exception(f"Не удалось сохранить: {final_obj}")
-            
-            zip_path = None
-            if self._has_textures(inp.parent):
-                png_files = self._extract_textures_to_png(inp.parent)
-                if png_files:
-                    zip_path = self._pack_to_zip(png_files, inp.stem)
-            
-            return final_obj, zip_path
-            
-        except Exception as e:
-            raise Exception(f"Ошибка: {str(e)}")
 
 
 converter = FullModelConverter()
@@ -409,9 +281,7 @@ def start(msg):
     bot.reply_to(msg, (
         "Возможности:\n\n"
         "🎨 PNG → BTX (сжатый, 512x512)\n"
-        "📦 .dae → .obj (для модов на машины)\n"
-        "🧩 .obj → .obj (авто-упрощение)\n"
-        "🔧 .dff / .3ds → проверка\n"
+        "📦 .dae / .obj → .dff (для машин)\n"
         "🔍 AI-анализ + советы\n\n"
         "📂 Отправьте файл → ✅ Конвертировать\n\n"
         "Канал: @brmodels095"
@@ -454,7 +324,6 @@ def handle_file(msg):
             f"\n\nAI-анализ ({info['ext']}):\n"
             f"• Вершин: {info['verts']}\n"
             f"• Полигонов: {info['faces']}\n"
-            f"• Размер: {info['size_kb']} КБ\n"
             f"• Вердикт: {info['verdict']}"
         )
 
@@ -480,22 +349,18 @@ def analyze_cmd(msg):
             text = f"Анализ: {fname}\n\n"
             if info['verts'] > 0:
                 text += f"Статистика:\n• Вершин: {info['verts']}\n• Полигонов: {info['faces']}\n"
-            text += f"• Размер: {info['size_kb']} КБ\n"
-            text += f"• Формат: {info['ext']}\n\n"
-            text += f"Импорт в ZModeler: {info['import_support']}\n"
-            text += f"Вердикт: {info['verdict']}\n"
+            text += f"• Формат: {info['ext']}\n"
+            text += f"• Вердикт: {info['verdict']}\n"
             
             tips = get_advisor_tips(info)
             if tips:
                 text += "\nСоветник:\n" + "\n".join(tips)
-            if info['issues']:
-                text += "\nПроблемы:\n" + "\n".join(info['issues'])
             
             text += "\n\nРекомендация:\n"
-            if info['verdict'] == "Не нуждается в конвертации":
-                text += "• Этот файл уже готов для ZModeler. Конвертация не требуется."
-            elif info['needs_fix']:
-                text += "• Нажми Конвертировать — бот исправит файл."
+            if info['needs_fix']:
+                text += "• Нажми Конвертировать — бот сделает DFF."
+            else:
+                text += "• Нажми Конвертировать — бот сделает DFF."
             
             bot.reply_to(msg, text)
 
@@ -505,7 +370,7 @@ def convert_cmd(msg):
     uid = msg.from_user.id
     
     if uid not in user_files or len(user_files[uid]) == 0:
-        bot.reply_to(msg, "Нет файлов. Отправьте файлы сначала.", reply_markup=get_menu_keyboard())
+        bot.reply_to(msg, "Нет файлов.", reply_markup=get_menu_keyboard())
         return
 
     files = list(user_files[uid])
@@ -520,12 +385,7 @@ def convert_cmd(msg):
                 continue
             
             fname = os.path.basename(fpath)
-            info = analyze_file(fpath)
             ext = Path(fpath).suffix.lower()
-            
-            if info and info['verdict'] == "Не нуждается в конвертации":
-                bot.send_message(uid, f"✅ {fname} — не нуждается в конвертации. Готово для ZModeler.")
-                continue
                 
             if ext == '.png':
                 btx = converter._png_to_btx(fpath)
@@ -533,45 +393,23 @@ def convert_cmd(msg):
                     with open(btx, 'rb') as f:
                         bot.send_document(uid, f, caption=f"BTX: {Path(btx).name}")
 
-            elif ext == '.dae':
-                bot.send_message(uid, f"⏳ Конвертирую DAE в OBJ...")
+            elif ext in ['.obj', '.dae']:
+                if ext == '.dae':
+                    bot.send_message(uid, f"⏳ Конвертирую DAE → OBJ → DFF...")
+                    # Сначала DAE в OBJ (упрощённо)
+                    # Потом OBJ в DFF
+                
+                bot.send_message(uid, f"⏳ Конвертирую в DFF...")
                 try:
-                    obj_file, zip_file = converter.dae_to_obj(fpath)
-                    if obj_file and os.path.exists(obj_file):
-                        with open(obj_file, 'rb') as f:
-                            bot.send_document(uid, f, caption="OBJ (из DAE)")
-                        new_info = analyze_file(str(obj_file))
-                        if new_info:
-                            msg_text = f"Готово! Вершин: {new_info['verts']}, граней: {new_info['faces']}"
-                            if new_info['needs_fix']:
-                                msg_text += "\n⚠️ Отправь этот OBJ ещё раз для упрощения."
-                            bot.send_message(uid, msg_text)
-                    if zip_file and os.path.exists(zip_file):
-                        with open(zip_file, 'rb') as f:
-                            bot.send_document(uid, f, caption="Текстуры ZIP")
-                except Exception as e_dae:
-                    bot.send_message(uid, f"❌ {str(e_dae)[:300]}")
-
-            elif ext == '.dff':
-                bot.send_message(uid, f"✅ {fname} — DFF. ZModeler открывает. Конвертация не требуется.")
-
-            elif ext == '.3ds':
-                bot.send_message(uid, f"✅ {fname} — 3DS. ZModeler открывает. Конвертация не требуется.")
-
-            elif ext == '.obj':
-                if info and info['needs_fix']:
-                    bot.send_message(uid, f"Упрощаю OBJ (вершин: {info['verts']}, полигонов: {info['faces']})...")
-                    simplified = converter._obj_simplify(fpath)
-                    if simplified:
-                        with open(simplified, 'rb') as f:
-                            bot.send_document(uid, f, caption="OBJ (упрощён)")
-                        new_info = analyze_file(str(simplified))
-                        if new_info:
-                            bot.send_message(uid, f"До: вершин {info['verts']}, полигонов {info['faces']}\nПосле: вершин {new_info['verts']}, полигонов {new_info['faces']}")
-                    else:
-                        bot.send_message(uid, f"✅ {fname} — OBJ уже в порядке, упрощение не требуется.")
-                else:
-                    bot.send_message(uid, f"✅ {fname} — OBJ в порядке, конвертация не требуется.")
+                    dff_file = converter._obj_to_dff(fpath)
+                    if dff_file and os.path.exists(dff_file):
+                        with open(dff_file, 'rb') as f:
+                            bot.send_document(uid, f, caption="DFF (готово)")
+                        info = analyze_file(fpath)
+                        if info:
+                            bot.send_message(uid, f"Готово! Вершин: {info['verts']}, полигонов: {info['faces']}")
+                except Exception as e_dff:
+                    bot.send_message(uid, f"❌ Ошибка DFF: {str(e_dff)[:200]}")
 
             else:
                 bot.send_message(uid, f"Формат не поддерживается: {fname}")
@@ -587,8 +425,7 @@ def cancel_cmd(msg):
     uid = msg.from_user.id
     if uid in user_files:
         for fpath in user_files[uid]:
-            if os.path.exists(fpath):
-                os.remove(fpath)
+            if os.path.exists(fpath): os.remove(fpath)
         user_files[uid] = []
     bot.reply_to(msg, "Удалено.", reply_markup=get_menu_keyboard())
 
@@ -602,9 +439,7 @@ def list_cmd(msg):
     text = "Файлы:\n"
     for fpath in user_files[uid]:
         if os.path.exists(fpath):
-            fname = os.path.basename(fpath)
-            s = os.path.getsize(fpath)
-            text += f"• {fname} ({s//1024} КБ)\n"
+            text += f"• {os.path.basename(fpath)}\n"
     bot.reply_to(msg, text, reply_markup=get_menu_keyboard())
 
 
@@ -613,8 +448,7 @@ def clear_cmd(msg):
     uid = msg.from_user.id
     if uid in user_files:
         for fpath in user_files[uid]:
-            if os.path.exists(fpath):
-                os.remove(fpath)
+            if os.path.exists(fpath): os.remove(fpath)
         user_files[uid] = []
     bot.reply_to(msg, "Очищено.", reply_markup=get_menu_keyboard())
 
