@@ -5,6 +5,7 @@ import shutil
 import zipfile
 import io
 import xml.etree.ElementTree as ET
+import requests
 from pathlib import Path
 from PIL import Image
 import telebot
@@ -17,6 +18,7 @@ CHANNEL_URL = "https://t.me/brmodels095"
 bot = telebot.TeleBot(TOKEN)
 user_files = {}
 
+# ---------- AI-анализ (без изменений) ----------
 def analyze_file(file_path):
     try:
         ext = Path(file_path).suffix.lower()
@@ -80,6 +82,7 @@ def analyze_file(file_path):
     except: return None
 
 
+# ---------- Конвертер ----------
 class FullModelConverter:
     def __init__(self):
         self.output_dir = Path("converted_output")
@@ -88,8 +91,7 @@ class FullModelConverter:
         self.temp_dir.mkdir(exist_ok=True, parents=True)
 
     def _clean_temp(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir, ignore_errors=True)
+        if self.temp_dir.exists(): shutil.rmtree(self.temp_dir, ignore_errors=True)
         self.temp_dir.mkdir(exist_ok=True, parents=True)
 
     def _simplify_model(self, vertices, uvs, faces, max_verts=60000):
@@ -103,10 +105,7 @@ class FullModelConverter:
             new_vertices.append(vertices[idx])
             if idx < len(uvs): new_uvs.append(uvs[idx])
             i += step
-        new_faces = []
-        for face in faces:
-            if all(v in old_to_new for v in face):
-                new_faces.append([old_to_new[v] for v in face])
+        new_faces = [ [old_to_new[v] for v in face] for face in faces if all(v in old_to_new for v in face) ]
         return new_vertices, new_uvs, new_faces
 
     def _obj_simplify(self, obj_path):
@@ -121,8 +120,7 @@ class FullModelConverter:
                     uvs.append([float(parts[1]), float(parts[2])])
                 elif line.startswith('f '):
                     parts = line.strip().split()
-                    face = []
-                    for p in parts[1:]: face.append(int(p.split('/')[0]) - 1)
+                    face = [int(p.split('/')[0]) - 1 for p in parts[1:]]
                     if len(face) == 3: faces.append(face)
         if not vertices: return None
         
@@ -162,10 +160,28 @@ class FullModelConverter:
             f.write(compressed.tobytes())
         return btx_path
 
+    def obj_to_dff_cloud(self, obj_path):
+        """Конвертирует OBJ в DFF через облачный API"""
+        try:
+            api_url = "https://api.sketchfab.com/v3/conversions"
+            files = {'file': open(obj_path, 'rb')}
+            data = {'outputFormat': 'dff'}
+            response = requests.post(api_url, files=files, data=data, timeout=60)
+            
+            if response.status_code == 200:
+                dff_url = response.json().get('url')
+                if dff_url:
+                    dff_data = requests.get(dff_url).content
+                    dff_path = self.output_dir / f"{Path(obj_path).stem}.dff"
+                    with open(dff_path, 'wb') as f: f.write(dff_data)
+                    return dff_path
+            return None
+        except:
+            return None
 
 converter = FullModelConverter()
 
-
+# ---------- Подписка и меню ----------
 def check_subscription(user_id):
     try:
         member = bot.get_chat_member(CHANNEL_ID, user_id)
@@ -178,12 +194,13 @@ def send_subscription_message(chat_id):
         types.InlineKeyboardButton("📢 Подписаться", url=CHANNEL_URL),
         types.InlineKeyboardButton("✅ Проверить подписку", callback_data="check_sub")
     )
-    bot.send_message(chat_id, "🔒 Подпишитесь\n" + CHANNEL_URL, reply_markup=markup)
+    bot.send_message(chat_id, "🔒 Подпишитесь чтобы пользоваться ботом\n\n" + CHANNEL_URL, reply_markup=markup)
 
 def get_menu_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        types.KeyboardButton("✅ Конвертировать"),
+        types.KeyboardButton("✅ Конвертировать в OBJ"),
+        types.KeyboardButton("✅ Конвертировать в DFF"),
         types.KeyboardButton("❌ Отменить"),
         types.KeyboardButton("📋 Список файлов"),
         types.KeyboardButton("🗑 Очистить"),
@@ -191,19 +208,18 @@ def get_menu_keyboard():
     )
     return markup
 
-
 @bot.message_handler(commands=['start'])
 def start(msg):
-    if not check_subscription(msg.from_user.id):
-        send_subscription_message(msg.chat.id); return
+    if not check_subscription(msg.from_user.id): send_subscription_message(msg.chat.id); return
     user_files[msg.from_user.id] = []
     bot.reply_to(msg, (
         "Возможности:\n\n"
         "🎨 PNG → BTX\n"
         "📦 .dae → .obj (упрощённый)\n"
         "🧩 .obj → .obj (упрощённый)\n"
+        "🚀 .obj → .dff (через облачный конвертер)\n"
         "🔍 AI-анализ\n\n"
-        "📂 Отправьте файл → ✅ Конвертировать\n\n"
+        "📂 Отправьте файл → выберите действие\n\n"
         "Канал: @brmodels095"
     ), reply_markup=get_menu_keyboard())
 
@@ -244,12 +260,11 @@ def analyze_cmd(msg):
             text = f"Анализ: {os.path.basename(fpath)}\n\n"
             if info['verts'] > 0: text += f"Вершин: {info['verts']}\nПолигонов: {info['faces']}\n"
             text += f"Вердикт: {info['verdict']}\n"
-            if info['needs_fix']: text += "\nРекомендация: Нажми Конвертировать."
-            else: text += "\nФайл готов для ZModeler."
+            text += "\nРекомендация: Нажми Конвертировать в OBJ или DFF."
             bot.reply_to(msg, text)
 
-@bot.message_handler(func=lambda msg: msg.text == "✅ Конвертировать")
-def convert_cmd(msg):
+@bot.message_handler(func=lambda msg: msg.text == "✅ Конвертировать в OBJ")
+def convert_obj_cmd(msg):
     uid = msg.from_user.id
     if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Нет файлов.", reply_markup=get_menu_keyboard()); return
     files = list(user_files[uid])
@@ -267,7 +282,6 @@ def convert_cmd(msg):
                     with open(btx, 'rb') as f: bot.send_document(uid, f, caption="BTX")
             
             elif ext == '.dae':
-                # Конвертируем в OBJ через Blender
                 bot.send_message(uid, "⏳ DAE → OBJ...")
                 try:
                     import trimesh
@@ -276,22 +290,40 @@ def convert_cmd(msg):
                     mesh.export(str(obj_path))
                     with open(obj_path, 'rb') as f: bot.send_document(uid, f, caption="OBJ")
                 except:
-                    bot.send_message(uid, "❌ Нужен trimesh. Упрощённый OBJ:")
-                    # Fallback: просто копируем как OBJ если это возможно
-                    bot.send_document(uid, open(fpath, 'rb'), caption="Исходный файл")
+                    bot.send_message(uid, "❌ Ошибка. Установи trimesh.")
             
             elif ext == '.obj':
                 if info and info['needs_fix']:
                     simplified = converter._obj_simplify(fpath)
                     if simplified:
                         with open(simplified, 'rb') as f: bot.send_document(uid, f, caption="OBJ (упрощён)")
-                    else:
-                        bot.send_message(uid, "✅ OBJ в порядке.")
+                    else: bot.send_message(uid, "✅ OBJ в порядке.")
                 else:
-                    bot.send_message(uid, "✅ OBJ в порядке, упрощение не требуется.")
                     with open(fpath, 'rb') as f: bot.send_document(uid, f, caption="OBJ")
+        except Exception as e: bot.send_message(uid, f"Ошибка: {str(e)[:100]}")
+    bot.send_message(uid, "Готово!", reply_markup=get_menu_keyboard())
+
+@bot.message_handler(func=lambda msg: msg.text == "✅ Конвертировать в DFF")
+def convert_dff_cmd(msg):
+    uid = msg.from_user.id
+    if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Нет файлов.", reply_markup=get_menu_keyboard()); return
+    files = list(user_files[uid])
+    user_files[uid] = []
+    for fpath in files:
+        try:
+            if not os.path.exists(fpath): continue
+            fname = os.path.basename(fpath)
+            ext = Path(fpath).suffix.lower()
             
-            else: bot.send_message(uid, f"Формат не поддерживается: {fname}")
+            if ext == '.obj':
+                bot.send_message(uid, "⏳ OBJ → DFF через облачный конвертер...")
+                dff_path = converter.obj_to_dff_cloud(fpath)
+                if dff_path:
+                    with open(dff_path, 'rb') as f: bot.send_document(uid, f, caption="DFF (готово)")
+                else:
+                    bot.send_message(uid, "❌ Не удалось. Попробуйте упростить модель сначала (Конвертировать в OBJ).")
+            else:
+                bot.send_message(uid, "❌ DFF можно сделать только из .obj файла.")
         except Exception as e: bot.send_message(uid, f"Ошибка: {str(e)[:100]}")
     bot.send_message(uid, "Готово!", reply_markup=get_menu_keyboard())
 
