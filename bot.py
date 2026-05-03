@@ -186,7 +186,13 @@ class FullModelConverter:
         if not vertices:
             return None
         
-        vertices, uvs, faces = self._simplify_model(vertices, uvs, faces, 60000)
+        # Вычисляем целевое количество вершин
+        target_verts = 60000
+        if len(faces) > 50000:
+            ratio = 50000 / len(faces)
+            target_verts = max(3000, int(len(vertices) * ratio))
+        
+        vertices, uvs, faces = self._simplify_model(vertices, uvs, faces, target_verts)
         
         while len(uvs) < len(vertices):
             uvs.append([0.0, 0.0])
@@ -323,22 +329,14 @@ class FullModelConverter:
             if not faces:
                 raise Exception(f"Граней: 0")
 
-            if len(vertices) > 60000:
-                step = len(vertices) / 60000
-                old_to_new = {}
-                new_vertices, new_uvs = [], []
-                i = 0.0
-                while i < len(vertices):
-                    idx = int(i)
-                    old_to_new[idx] = len(new_vertices)
-                    new_vertices.append(vertices[idx])
-                    if idx < len(uvs): new_uvs.append(uvs[idx])
-                    i += step
-                new_faces = []
-                for face in faces:
-                    if all(v in old_to_new for v in face):
-                        new_faces.append([old_to_new[v] for v in face])
-                vertices, uvs, faces = new_vertices, new_uvs, new_faces
+            # Упрощение при конвертации DAE
+            target_verts = 60000
+            if len(faces) > 50000:
+                ratio = 50000 / len(faces)
+                target_verts = max(3000, int(len(vertices) * ratio))
+            
+            if len(vertices) > target_verts or len(faces) > 50000:
+                vertices, uvs, faces = self._simplify_model(vertices, uvs, faces, target_verts)
             
             while len(uvs) < len(vertices):
                 uvs.append([0.0, 0.0])
