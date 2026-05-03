@@ -110,6 +110,7 @@ def get_advisor_tips(info):
     tips = []
     ext = info['ext']
     verts = info['verts']
+    faces = info['faces']
     
     if ext == '.dae':
         tips.append("ZModeler не открывает .dae. Нажми Конвертировать.")
@@ -117,11 +118,13 @@ def get_advisor_tips(info):
         tips.append("DFF открывается в ZModeler. Конвертация не требуется.")
     elif ext == '.3ds':
         tips.append("3DS открывается. После импорта проверь текстуры.")
-    elif ext == '.obj' and verts <= 65535 and verts > 0:
-        tips.append("Файл готов к импорту в ZModeler.")
-    
-    if verts > 65535:
-        tips.append("Лимит 65K вершин. Нажми Конвертировать.")
+    elif ext == '.obj':
+        if verts <= 65535 and faces <= 50000 and verts > 0:
+            tips.append("Машина готова к импорту в ZModeler.")
+        elif faces > 50000:
+            tips.append("Слишком много полигонов. Нажми Конвертировать для упрощения.")
+        elif verts > 65535:
+            tips.append("Слишком много вершин. Нажми Конвертировать для упрощения.")
     
     return tips
 
@@ -186,13 +189,15 @@ class FullModelConverter:
         if not vertices:
             return None
         
-        # Если полигонов много — упрощаем
-        target_verts = 60000
+        # Упрощаем только если реально много
         if len(faces) > 50000:
             ratio = 50000 / len(faces)
             target_verts = max(3000, int(len(vertices) * ratio))
-        
-        vertices, uvs, faces = self._simplify_model(vertices, uvs, faces, target_verts)
+            vertices, uvs, faces = self._simplify_model(vertices, uvs, faces, target_verts)
+        elif len(vertices) > 60000:
+            vertices, uvs, faces = self._simplify_model(vertices, uvs, faces, 60000)
+        else:
+            return None
         
         while len(uvs) < len(vertices):
             uvs.append([0.0, 0.0])
@@ -329,7 +334,7 @@ class FullModelConverter:
             if not faces:
                 raise Exception(f"Граней: 0")
 
-            # Не упрощаем DAE — сохраняем детали для модов на машины
+            # Не упрощаем — сохраняем детали для машины
             while len(uvs) < len(vertices):
                 uvs.append([0.0, 0.0])
 
@@ -523,17 +528,17 @@ def convert_cmd(msg):
                         bot.send_document(uid, f, caption=f"BTX: {Path(btx).name}")
 
             elif ext == '.dae':
-                bot.send_message(uid, f"⏳ Конвертирую DAE в OBJ для машины...")
+                bot.send_message(uid, f"⏳ Конвертирую DAE в OBJ...")
                 try:
                     obj_file, zip_file = converter.dae_to_obj(fpath)
                     if obj_file and os.path.exists(obj_file):
                         with open(obj_file, 'rb') as f:
-                            bot.send_document(uid, f, caption="OBJ (из DAE, без упрощения)")
+                            bot.send_document(uid, f, caption="OBJ (из DAE)")
                         new_info = analyze_file(str(obj_file))
                         if new_info:
                             msg_text = f"Готово! Вершин: {new_info['verts']}, граней: {new_info['faces']}"
-                            if new_info['verts'] > 65535:
-                                msg_text += "\n⚠️ Вершин больше 65535 — отправь .obj ещё раз для упрощения."
+                            if new_info['needs_fix']:
+                                msg_text += "\n⚠️ Отправь этот OBJ ещё раз для упрощения."
                             bot.send_message(uid, msg_text)
                     if zip_file and os.path.exists(zip_file):
                         with open(zip_file, 'rb') as f:
@@ -542,13 +547,13 @@ def convert_cmd(msg):
                     bot.send_message(uid, f"❌ {str(e_dae)[:300]}")
 
             elif ext == '.dff':
-                bot.send_message(uid, f"✅ {fname} — DFF файл. ZModeler его открывает. Конвертация не требуется.")
+                bot.send_message(uid, f"✅ {fname} — DFF. ZModeler открывает. Конвертация не требуется.")
 
             elif ext == '.3ds':
-                bot.send_message(uid, f"✅ {fname} — 3DS файл. ZModeler его открывает. Конвертация не требуется.")
+                bot.send_message(uid, f"✅ {fname} — 3DS. ZModeler открывает. Конвертация не требуется.")
 
             elif ext == '.obj':
-                if info and (info['verts'] > 60000 or info['faces'] > 50000):
+                if info and info['needs_fix']:
                     bot.send_message(uid, f"Упрощаю OBJ (вершин: {info['verts']}, полигонов: {info['faces']})...")
                     simplified = converter._obj_simplify(fpath)
                     if simplified:
@@ -557,6 +562,8 @@ def convert_cmd(msg):
                         new_info = analyze_file(str(simplified))
                         if new_info:
                             bot.send_message(uid, f"До: вершин {info['verts']}, полигонов {info['faces']}\nПосле: вершин {new_info['verts']}, полигонов {new_info['faces']}")
+                    else:
+                        bot.send_message(uid, f"✅ {fname} — OBJ уже в порядке, упрощение не требуется.")
                 else:
                     bot.send_message(uid, f"✅ {fname} — OBJ в порядке, конвертация не требуется.")
 
