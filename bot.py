@@ -287,7 +287,6 @@ class FullModelConverter:
                     if uvs_data:
                         uvs.extend(uvs_data)
                     
-                    # Поддержка triangles, polylist, polygons
                     found_face = False
                     for tag_name in ['triangles', 'polylist', 'polygons']:
                         for elem in mesh.findall(f'{{{ns}}}{tag_name}'):
@@ -300,7 +299,6 @@ class FullModelConverter:
                                         faces.append([indices[i]+start_idx, indices[i+1]+start_idx, indices[i+2]+start_idx])
                                 found_face = True
                     
-                    # Если грани не найдены через p, ищем vcount + p
                     if not found_face:
                         for tag_name in ['polylist', 'polygons']:
                             for elem in mesh.findall(f'{{{ns}}}{tag_name}'):
@@ -323,7 +321,7 @@ class FullModelConverter:
             if not vertices:
                 raise Exception(f"Вершин: 0")
             if not faces:
-                raise Exception(f"Граней: 0. Теги triangles/polylist/polygons не найдены или пусты.")
+                raise Exception(f"Граней: 0")
 
             if len(vertices) > 60000:
                 step = len(vertices) / 60000
@@ -557,15 +555,15 @@ def convert_cmd(msg):
                 bot.send_message(uid, f"✅ {fname} — 3DS файл. ZModeler его открывает. Конвертация не требуется.")
 
             elif ext == '.obj':
-                if info and info['verts'] > 60000:
-                    bot.send_message(uid, f"Упрощаю OBJ ({info['verts']} вершин)...")
+                if info and (info['verts'] > 60000 or info['faces'] > 50000):
+                    bot.send_message(uid, f"Упрощаю OBJ (вершин: {info['verts']}, полигонов: {info['faces']})...")
                     simplified = converter._obj_simplify(fpath)
                     if simplified:
                         with open(simplified, 'rb') as f:
                             bot.send_document(uid, f, caption="OBJ (упрощён)")
                         new_info = analyze_file(str(simplified))
                         if new_info:
-                            bot.send_message(uid, f"До: {info['verts']} вершин\nПосле: {new_info['verts']} вершин")
+                            bot.send_message(uid, f"До: вершин {info['verts']}, полигонов {info['faces']}\nПосле: вершин {new_info['verts']}, полигонов {new_info['faces']}")
                 else:
                     bot.send_message(uid, f"✅ {fname} — OBJ в порядке, конвертация не требуется.")
 
