@@ -45,10 +45,12 @@ def analyze_file(file_path):
                             fa = source.find(f'{{{ns}}}float_array')
                             if fa is not None and fa.text:
                                 verts += len(fa.text.strip().split()) // 3
-                    for triangles in mesh.findall(f'{{{ns}}}triangles'):
-                        p_elems = triangles.findall(f'{{{ns}}}p')
-                        if p_elems and p_elems[0].text:
-                            faces += len(p_elems[0].text.strip().split()) // 3
+                    for tag_name in ['triangles', 'polylist', 'polygons']:
+                        for elem in mesh.findall(f'{{{ns}}}{tag_name}'):
+                            p_elems = elem.findall(f'{{{ns}}}p')
+                            if p_elems and p_elems[0].text:
+                                count = len(p_elems[0].text.strip().split()) // 3
+                                faces += count
             except:
                 pass
         
@@ -257,24 +259,15 @@ class FullModelConverter:
             inp = Path(dae_path)
             
             if not inp.exists():
-                raise Exception(f"Файл не найден: {dae_path}")
+                raise Exception(f"Файл не найден")
             
-            try:
-                tree = ET.parse(dae_path)
-                root = tree.getroot()
-            except Exception as e:
-                raise Exception(f"Не удалось прочитать XML: {str(e)[:100]}")
+            tree = ET.parse(dae_path)
+            root = tree.getroot()
             
             ns = 'http://www.collada.org/2005/11/COLLADASchema'
-            meshes = list(root.iter(f'{{{ns}}}mesh'))
-            if not meshes:
-                meshes = list(root.iter('mesh'))
-                if not meshes:
-                    raise Exception(f"Не найдено ни одного mesh в файле")
-            
             vertices, uvs, faces = [], [], []
             
-            for mesh in meshes:
+            for mesh in root.iter(f'{{{ns}}}mesh'):
                 positions = None
                 uvs_data = None
                 
@@ -294,31 +287,54 @@ class FullModelConverter:
                     if uvs_data:
                         uvs.extend(uvs_data)
                     
-                    for triangles in mesh.findall(f'{{{ns}}}triangles'):
-                        p_elems = triangles.findall(f'{{{ns}}}p')
-                        if p_elems and p_elems[0].text and p_elems[0].text.strip():
-                            indices = list(map(int, p_elems[0].text.strip().split()))
-                            for i in range(0, len(indices), 3):
-                                if i + 2 < len(indices):
-                                    faces.append([indices[i]+start_idx, indices[i+1]+start_idx, indices[i+2]+start_idx])
+                    # Поддержка triangles, polylist, polygons
+                    found_face = False
+                    for tag_name in ['triangles', 'polylist', 'polygons']:
+                        for elem in mesh.findall(f'{{{ns}}}{tag_name}'):
+                            p_elems = elem.findall(f'{{{ns}}}p')
+                            if p_elems and p_elems[0].text and p_elems[0].text.strip():
+                                indices = list(map(int, p_elems[0].text.strip().split()))
+                                stride = 3
+                                for i in range(0, len(indices), stride):
+                                    if i + 2 < len(indices):
+                                        faces.append([indices[i]+start_idx, indices[i+1]+start_idx, indices[i+2]+start_idx])
+                                found_face = True
+                    
+                    # Если грани не найдены через p, ищем vcount + p
+                    if not found_face:
+                        for tag_name in ['polylist', 'polygons']:
+                            for elem in mesh.findall(f'{{{ns}}}{tag_name}'):
+                                vcount_elem = elem.find(f'{{{ns}}}vcount')
+                                p_elems = elem.findall(f'{{{ns}}}p')
+                                if vcount_elem is not None and p_elems and p_elems[0].text:
+                                    vcounts = list(map(int, vcount_elem.text.strip().split()))
+                                    indices = list(map(int, p_elems[0].text.strip().split()))
+                                    idx_pos = 0
+                                    for vc in vcounts:
+                                        if vc >= 3:
+                                            for j in range(vc - 2):
+                                                faces.append([
+                                                    indices[idx_pos] + start_idx,
+                                                    indices[idx_pos+j+1] + start_idx,
+                                                    indices[idx_pos+j+2] + start_idx
+                                                ])
+                                        idx_pos += vc
 
             if not vertices:
-                raise Exception(f"Вершин: 0 (positions не найдены)")
+                raise Exception(f"Вершин: 0")
             if not faces:
-                raise Exception(f"Граней: 0 (triangles не найдены)")
+                raise Exception(f"Граней: 0. Теги triangles/polylist/polygons не найдены или пусты.")
 
             if len(vertices) > 60000:
                 step = len(vertices) / 60000
                 old_to_new = {}
-                new_vertices = []
-                new_uvs = []
+                new_vertices, new_uvs = [], []
                 i = 0.0
                 while i < len(vertices):
                     idx = int(i)
                     old_to_new[idx] = len(new_vertices)
                     new_vertices.append(vertices[idx])
-                    if idx < len(uvs):
-                        new_uvs.append(uvs[idx])
+                    if idx < len(uvs): new_uvs.append(uvs[idx])
                     i += step
                 new_faces = []
                 for face in faces:
