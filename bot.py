@@ -15,7 +15,6 @@ CHANNEL_URL = "https://t.me/brmodels095"
 
 bot = telebot.TeleBot(TOKEN)
 user_files = {}
-user_modes = {}
 
 def analyze_file(file_path):
     try:
@@ -74,102 +73,51 @@ class FullModelConverter:
             f.write(compressed.tobytes())
         return btx_path
 
-    def damage_obj(self, obj_path, intensity=0.05, zone=None):
-        """Повреждает OBJ модель по описанию"""
+    def damage_obj(self, obj_path, intensity=0.05):
+        """Создаёт локальные вмятины на детали (дверь, крыло и т.д.)"""
         lines = []
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
         
-        vert_indices = [i for i, l in enumerate(lines) if l.startswith('v ')]
-        if not vert_indices: return None
+        verts = []
+        for i, line in enumerate(lines):
+            if line.startswith('v '):
+                parts = line.strip().split()
+                verts.append({'idx': i, 'x': float(parts[1]), 'y': float(parts[2]), 'z': float(parts[3])})
         
-        if zone == 'dver':
-            # Повреждаем вершины по бокам (X)
-            candidates = []
-            for idx in vert_indices:
-                parts = lines[idx].strip().split()
-                x = float(parts[1])
-                if abs(x) > 0.3:
-                    candidates.append(idx)
-            if candidates: vert_indices = candidates
+        if not verts:
+            return None
         
-        elif zone == 'krysha':
-            # Повреждаем верхние вершины (Y)
-            candidates = []
-            for idx in vert_indices:
-                parts = lines[idx].strip().split()
-                y = float(parts[2])
-                if y > 0.3:
-                    candidates.append(idx)
-            if candidates: vert_indices = candidates
+        xs = [v['x'] for v in verts]
+        ys = [v['y'] for v in verts]
+        zs = [v['z'] for v in verts]
+        width = max(xs) - min(xs)
+        height = max(ys) - min(ys)
+        depth = max(zs) - min(zs)
         
-        damage_count = max(1, len(vert_indices) // 3)
-        damaged = random.sample(vert_indices, min(damage_count, len(vert_indices)))
+        num_dents = random.randint(2, 6)
         
-        for idx in damaged:
-            parts = lines[idx].strip().split()
-            if len(parts) >= 4:
-                x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-                x += random.uniform(-intensity, intensity)
-                y += random.uniform(-intensity, intensity)
-                z += random.uniform(-intensity, intensity)
-                lines[idx] = f"v {x:.6f} {y:.6f} {z:.6f}\n"
+        for _ in range(num_dents):
+            cx = random.uniform(min(xs), max(xs))
+            cy = random.uniform(min(ys), max(ys))
+            cz = random.uniform(min(zs), max(zs))
+            radius = random.uniform(0.15, 0.3) * max(width, height)
+            
+            for v in verts:
+                dist = ((v['x']-cx)**2 + (v['y']-cy)**2 + (v['z']-cz)**2)**0.5
+                if dist < radius:
+                    force = (1 - dist/radius) * intensity * random.uniform(0.5, 1.5)
+                    if width >= height and width >= depth:
+                        lines[v['idx']] = f"v {v['x'] - force if v['x'] > 0 else v['x'] + force:.6f} {v['y']:.6f} {v['z']:.6f}\n"
+                    elif height >= depth:
+                        lines[v['idx']] = f"v {v['x']:.6f} {v['y'] - force:.6f} {v['z']:.6f}\n"
+                    else:
+                        lines[v['idx']] = f"v {v['x']:.6f} {v['y']:.6f} {v['z'] - force:.6f}\n"
         
         out_path = self.output_dir / f"{Path(obj_path).stem}_damaged.obj"
-        with open(out_path, 'w') as f: f.writelines(lines)
+        with open(out_path, 'w') as f:
+            f.writelines(lines)
         return out_path
-
-    def damage_dff(self, dff_path, intensity=0.05, zone=None):
-        """Повреждает DFF модель по описанию"""
-        try:
-            with open(dff_path, 'rb') as f:
-                data = bytearray(f.read())
-            
-            idx = 0
-            while idx < len(data) - 4:
-                if data[idx] == 0x0F and data[idx+1] == 0x00:
-                    flags = struct.unpack_from('<H', data, idx)[0]
-                    num_verts = struct.unpack_from('<I', data, idx+4)[0]
-                    
-                    vert_offset = idx + 12
-                    if flags & 0x08: vert_offset += num_verts * 4
-                    
-                    # Собираем координаты вершин
-                    all_verts = []
-                    for vi in range(num_verts):
-                        v_off = vert_offset + vi * 12
-                        if v_off + 12 <= len(data):
-                            x = struct.unpack_from('<f', data, v_off)[0]
-                            y = struct.unpack_from('<f', data, v_off+4)[0]
-                            z = struct.unpack_from('<f', data, v_off+8)[0]
-                            all_verts.append((vi, v_off, x, y, z))
-                    
-                    # Фильтруем по зоне
-                    if zone == 'dver':
-                        candidates = [(vi, vo, x, y, z) for vi, vo, x, y, z in all_verts if abs(x) > 0.3]
-                    elif zone == 'krysha':
-                        candidates = [(vi, vo, x, y, z) for vi, vo, x, y, z in all_verts if y > 0.3]
-                    else:
-                        candidates = all_verts
-                    
-                    damage_count = max(1, len(candidates) // 3)
-                    damaged = random.sample(candidates, min(damage_count, len(candidates)))
-                    
-                    for vi, v_off, x, y, z in damaged:
-                        x += random.uniform(-intensity, intensity)
-                        y += random.uniform(-intensity, intensity)
-                        z += random.uniform(-intensity, intensity)
-                        struct.pack_into('<f', data, v_off, x)
-                        struct.pack_into('<f', data, v_off+4, y)
-                        struct.pack_into('<f', data, v_off+8, z)
-                    
-                    break
-                idx += 1
-            
-            out_path = self.output_dir / f"{Path(dff_path).stem}_damaged.dff"
-            with open(out_path, 'wb') as f: f.write(data)
-            return out_path
-        except: return None
 
     def generate_xml(self, car_name, obj_name, texture_names):
         xml = '<?xml version="1.0" encoding="utf-8"?>\n'
@@ -210,17 +158,6 @@ def get_menu_keyboard():
     )
     return markup
 
-def get_damage_keyboard():
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("🚪 Дверь", callback_data="dmg_dver"),
-        types.InlineKeyboardButton("🏠 Крыша", callback_data="dmg_krysha"),
-        types.InlineKeyboardButton("💥 Вся машина", callback_data="dmg_all"),
-        types.InlineKeyboardButton("💪 Сильно", callback_data="dmg_hard"),
-        types.InlineKeyboardButton("🤏 Слабо", callback_data="dmg_light")
-    )
-    return markup
-
 @bot.message_handler(commands=['start'])
 def start(msg):
     if not check_subscription(msg.from_user.id): send_subscription_message(msg.chat.id); return
@@ -228,40 +165,11 @@ def start(msg):
     bot.reply_to(msg, (
         "🔧 *Бот для модов BR*\n\n"
         "🎨 PNG → BTX\n"
-        "🚗 Повредить .obj/.dff\n"
+        "🚗 Повредить деталь (.obj)\n"
         "📄 Создать XML\n\n"
-        "💬 Опиши повреждения словами:\n"
-        "«помни дверь» «разбей крышу» и т.д.\n\n"
+        "💬 Напиши «помни» после отправки .obj файла детали\n\n"
         "Канал: @brmodels095"
     ), reply_markup=get_menu_keyboard())
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("dmg_"))
-def damage_callback(call):
-    uid = call.from_user.id
-    if uid not in user_files or not user_files[uid]:
-        bot.answer_callback_query(call.id, "Нет файлов.", show_alert=True); return
-    
-    zone = None
-    intensity = 0.05
-    
-    if call.data == "dmg_dver": zone = 'dver'
-    elif call.data == "dmg_krysha": zone = 'krysha'
-    elif call.data == "dmg_hard": intensity = 0.15
-    elif call.data == "dmg_light": intensity = 0.02
-    
-    for fp in user_files[uid].copy():
-        ext = Path(fp).suffix.lower()
-        if ext not in ['.obj', '.dff']: continue
-        try:
-            if ext == '.obj': damaged = converter.damage_obj(fp, intensity, zone)
-            else: damaged = converter.damage_dff(fp, intensity, zone)
-            if damaged:
-                with open(damaged, 'rb') as f:
-                    bot.send_document(uid, f, caption="🚗 Повреждено")
-        except: pass
-    
-    bot.answer_callback_query(call.id, "✅ Готово!")
-    bot.edit_message_text("✅ Повреждения нанесены!", call.message.chat.id, call.message.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_sub")
 def check_sub_callback(call):
@@ -315,8 +223,20 @@ def convert_cmd(msg):
 @bot.message_handler(func=lambda msg: msg.text == "🚗 Повредить")
 def damage_cmd(msg):
     uid = msg.from_user.id
-    if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Нет файлов. Отправьте .obj или .dff"); return
-    bot.reply_to(msg, "Выберите зону повреждения:", reply_markup=get_damage_keyboard())
+    if uid not in user_files or not user_files[uid]: 
+        bot.reply_to(msg, "Нет файлов. Отправьте .obj файл детали."); return
+    
+    for fp in user_files[uid].copy():
+        ext = Path(fp).suffix.lower()
+        if ext != '.obj': continue
+        try:
+            damaged = converter.damage_obj(fp)
+            if damaged:
+                with open(damaged, 'rb') as f:
+                    bot.send_document(uid, f, caption="🚗 Повреждено")
+        except Exception as e: 
+            bot.send_message(uid, f"Ошибка: {e}")
+    bot.send_message(uid, "✅ Готово!", reply_markup=get_menu_keyboard())
 
 @bot.message_handler(func=lambda msg: msg.text == "📄 Создать XML")
 def xml_cmd(msg):
@@ -356,53 +276,23 @@ def any_msg(msg):
     
     text = msg.text.lower()
     
-    # Умное распознавание команд
-    if any(w in text for w in ['дверь', 'двери', 'помни', 'вмятина', 'бок']):
+    if any(w in text for w in ['помни', 'повреди', 'вмятина', 'дверь', 'двери']):
         if uid not in user_files or not user_files[uid]:
-            bot.reply_to(msg, "Сначала отправьте .obj или .dff файл.")
-            return
+            bot.reply_to(msg, "Сначала отправьте .obj файл детали."); return
+        
         for fp in user_files[uid].copy():
             ext = Path(fp).suffix.lower()
-            if ext not in ['.obj', '.dff']: continue
+            if ext != '.obj': continue
             try:
-                if ext == '.obj': damaged = converter.damage_obj(fp, zone='dver')
-                else: damaged = converter.damage_dff(fp, zone='dver')
+                damaged = converter.damage_obj(fp)
                 if damaged:
-                    with open(damaged, 'rb') as f: bot.send_document(uid, f, caption="🚪 Дверь повреждена")
-            except: pass
+                    with open(damaged, 'rb') as f:
+                        bot.send_document(uid, f, caption="🚗 Повреждённая деталь")
+            except Exception as e:
+                bot.send_message(uid, f"Ошибка: {e}")
         return
     
-    if any(w in text for w in ['крыша', 'крышу', 'помял', 'верх']):
-        if uid not in user_files or not user_files[uid]:
-            bot.reply_to(msg, "Сначала отправьте .obj или .dff файл.")
-            return
-        for fp in user_files[uid].copy():
-            ext = Path(fp).suffix.lower()
-            if ext not in ['.obj', '.dff']: continue
-            try:
-                if ext == '.obj': damaged = converter.damage_obj(fp, zone='krysha')
-                else: damaged = converter.damage_dff(fp, zone='krysha')
-                if damaged:
-                    with open(damaged, 'rb') as f: bot.send_document(uid, f, caption="🏠 Крыша повреждена")
-            except: pass
-        return
-    
-    if any(w in text for w in ['сильно', 'разбей', 'авария', 'хлам']):
-        if uid not in user_files or not user_files[uid]:
-            bot.reply_to(msg, "Сначала отправьте .obj или .dff файл.")
-            return
-        for fp in user_files[uid].copy():
-            ext = Path(fp).suffix.lower()
-            if ext not in ['.obj', '.dff']: continue
-            try:
-                if ext == '.obj': damaged = converter.damage_obj(fp, intensity=0.15)
-                else: damaged = converter.damage_dff(fp, intensity=0.15)
-                if damaged:
-                    with open(damaged, 'rb') as f: bot.send_document(uid, f, caption="💥 Сильные повреждения")
-            except: pass
-        return
-    
-    bot.reply_to(msg, "💬 Скажите что повредить:\n- дверь\n- крышу\n- сильно\nИли используйте меню.", reply_markup=get_menu_keyboard())
+    bot.reply_to(msg, "💬 Отправьте .obj файл детали и напишите «помни»\nИли используйте меню.", reply_markup=get_menu_keyboard())
 
 print("[>] Бот запущен")
 bot.polling()
