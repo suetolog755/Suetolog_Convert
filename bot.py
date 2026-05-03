@@ -18,6 +18,7 @@ SUPPORT_USERNAME = "@brmodels013"
 
 bot = telebot.TeleBot(TOKEN)
 user_files = {}
+user_damage_level = {}
 
 def analyze_file(file_path):
     try:
@@ -68,17 +69,17 @@ class FullModelConverter:
             f.write(compressed.tobytes())
         return btx_path
 
-    def damage_obj(self, obj_path):
+    def damage_obj(self, obj_path, intensity=0.15, num_dents=6):
         """
-        Создаёт 3 варианта повреждений: царапины, авария, хлам.
-        Все варианты НЕ задевают края (отступ 25%).
+        Вмятины. Одна большая + несколько мелких.
+        Края НЕ задеваются (отступ 25%).
+        Глубина средних: 15 см.
         """
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
-            original_lines = f.read().split('\n')
+            lines = f.read().split('\n')
         
-        # Собираем вершины
         vert_entries = []
-        for i, line in enumerate(original_lines):
+        for i, line in enumerate(lines):
             if line.startswith('v ') and not line.startswith('vt ') and not line.startswith('vn '):
                 parts = line.strip().split()
                 if len(parts) >= 4:
@@ -87,7 +88,7 @@ class FullModelConverter:
                     except: pass
         
         if len(vert_entries) < 10:
-            return []
+            return None, 0, 0
         
         all_x = [v[1] for v in vert_entries]
         all_y = [v[2] for v in vert_entries]
@@ -105,12 +106,10 @@ class FullModelConverter:
         size_y = max_y - min_y
         size_z = max_z - min_z
         
-        # Определяем ось вдавливания
         if size_x >= size_y and size_x >= size_z: push_axis = 'x'
         elif size_y >= size_z: push_axis = 'y'
         else: push_axis = 'z'
         
-        # Большой отступ от краёв (25%)
         edge = 0.25
         
         def is_edge(x, y, z):
@@ -120,63 +119,55 @@ class FullModelConverter:
                 abs(z - min_z) < size_z * edge or abs(z - max_z) < size_z * edge
             )
         
-        def push(lines, idx, x, y, z, force):
-            if push_axis == 'x':
-                new_x = x - force if x > 0 else x + force
-                lines[idx] = f"v {new_x:.6f} {y:.6f} {z:.6f}"
-            elif push_axis == 'y':
-                lines[idx] = f"v {x:.6f} {y - force:.6f} {z:.6f}"
-            else:
-                lines[idx] = f"v {x:.6f} {y:.6f} {z - force:.6f}"
+        main_radius = max(size_x, size_y, size_z) * random.uniform(0.5, 0.7)
+        main_damaged = 0
         
-        def make_variant(intensity, dents_count, radius_mult, small_radius_mult):
-            lines = original_lines.copy()
-            # Одна большая вмятина в центре
-            main_radius = max(size_x, size_y, size_z) * radius_mult
+        for entry in vert_entries:
+            idx, x, y, z = entry
+            dx = x - mid_x; dy = y - mid_y; dz = z - mid_z
+            dist = (dx*dx + dy*dy + dz*dz) ** 0.5
+            
+            if dist < main_radius and not is_edge(x, y, z):
+                force = (1 - dist/main_radius) * intensity * random.uniform(0.8, 1.3)
+                self._push_vertex(lines, idx, x, y, z, force, push_axis)
+                main_damaged += 1
+        
+        for _ in range(num_dents):
+            cx = random.uniform(min_x + size_x*edge, max_x - size_x*edge)
+            cy = random.uniform(min_y + size_y*edge, max_y - size_y*edge)
+            cz = random.uniform(min_z + size_z*edge, max_z - size_z*edge)
+            small_radius = max(size_x, size_y, size_z) * random.uniform(0.08, 0.18)
+            
             for entry in vert_entries:
                 idx, x, y, z = entry
-                dx, dy, dz = x - mid_x, y - mid_y, z - mid_z
+                dx = x - cx; dy = y - cy; dz = z - cz
                 dist = (dx*dx + dy*dy + dz*dz) ** 0.5
-                if dist < main_radius and not is_edge(x, y, z):
-                    force = (1 - dist/main_radius) * intensity
-                    push(lines, idx, x, y, z, force)
-            
-            # Мелкие вмятины
-            for _ in range(dents_count):
-                cx = random.uniform(min_x + size_x*edge, max_x - size_x*edge)
-                cy = random.uniform(min_y + size_y*edge, max_y - size_y*edge)
-                cz = random.uniform(min_z + size_z*edge, max_z - size_z*edge)
-                sr = max(size_x, size_y, size_z) * small_radius_mult
-                for entry in vert_entries:
-                    idx, x, y, z = entry
-                    dx, dy, dz = x - cx, y - cy, z - cz
-                    dist = (dx*dx + dy*dy + dz*dz) ** 0.5
-                    if dist < sr and not is_edge(x, y, z):
-                        force = (1 - dist/sr) * intensity * 0.5 * random.uniform(0.6, 1.4)
-                        push(lines, idx, x, y, z, force)
-            return lines
+                
+                if dist < small_radius and not is_edge(x, y, z):
+                    force = (1 - dist/small_radius) * intensity * 0.5 * random.uniform(0.5, 1.5)
+                    self._push_vertex(lines, idx, x, y, z, force, push_axis)
         
-        results = []
+        out_path = self.output_dir / f"{Path(obj_path).stem}_damaged.obj"
+        with open(out_path, 'w') as f:
+            f.write('\n'.join(lines))
         
-        # Вариант 1: Царапины (лёгкие)
-        lines1 = make_variant(intensity=0.02, dents_count=10, radius_mult=0.2, small_radius_mult=0.04)
-        out1 = self.output_dir / f"{Path(obj_path).stem}_scratches.obj"
-        with open(out1, 'w') as f: f.write('\n'.join(lines1))
-        results.append((out1, "🤏 Царапины", "scratches"))
-        
-        # Вариант 2: Авария (средние)
-        lines2 = make_variant(intensity=0.15, dents_count=8, radius_mult=0.35, small_radius_mult=0.08)
-        out2 = self.output_dir / f"{Path(obj_path).stem}_crash.obj"
-        with open(out2, 'w') as f: f.write('\n'.join(lines2))
-        results.append((out2, "💪 Авария", "crash"))
-        
-        # Вариант 3: Хлам (сильные)
-        lines3 = make_variant(intensity=0.40, dents_count=12, radius_mult=0.50, small_radius_mult=0.12)
-        out3 = self.output_dir / f"{Path(obj_path).stem}_junk.obj"
-        with open(out3, 'w') as f: f.write('\n'.join(lines3))
-        results.append((out3, "🔥 Хлам", "junk"))
-        
-        return results
+        return out_path, 1 + num_dents, main_damaged
+    
+    def _push_vertex(self, lines, idx, x, y, z, force, axis):
+        new_x, new_y, new_z = x, y, z
+        if axis == 'x':
+            new_x = x - force if x > 0 else x + force
+            new_y = y + random.uniform(-force*0.4, force*0.4)
+            new_z = z + random.uniform(-force*0.4, force*0.4)
+        elif axis == 'y':
+            new_y = y - force
+            new_x = x + random.uniform(-force*0.4, force*0.4)
+            new_z = z + random.uniform(-force*0.4, force*0.4)
+        else:
+            new_z = z - force
+            new_x = x + random.uniform(-force*0.4, force*0.4)
+            new_y = y + random.uniform(-force*0.4, force*0.4)
+        lines[idx] = f"v {new_x:.6f} {new_y:.6f} {new_z:.6f}"
 
     def generate_xml(self, car_name, obj_name, texture_names):
         xml = '<?xml version="1.0" encoding="utf-8"?>\n'
@@ -207,12 +198,23 @@ def send_subscription_message(chat_id):
 def get_menu_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
+        types.KeyboardButton("🎨 Конвертировать"),
         types.KeyboardButton("🚗 Повредить"),
         types.KeyboardButton("📄 Создать XML"),
         types.KeyboardButton("🆘 Техподдержка"),
         types.KeyboardButton("📋 Список"),
         types.KeyboardButton("🗑 Очистить"),
         types.KeyboardButton("🔍 Анализ")
+    )
+    return markup
+
+def get_damage_level_keyboard():
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("🤏 Мелкие царапины (5см)", callback_data="dmg_light"),
+        types.InlineKeyboardButton("💪 Средние вмятины (15см)", callback_data="dmg_medium"),
+        types.InlineKeyboardButton("💥 Сильная авария (30см)", callback_data="dmg_hard"),
+        types.InlineKeyboardButton("🔥 Полный хлам (50см)", callback_data="dmg_extreme")
     )
     return markup
 
@@ -223,11 +225,20 @@ def send_progress(chat_id, message_id, text, duration=3):
         except: pass
         time.sleep(duration / len(steps))
 
-def process_damage(uid, cid):
+def process_damage(uid, cid, level='medium'):
     if uid not in user_files or not user_files[uid]:
         bot.send_message(cid, "❌ Нет файлов."); return
     
-    status_msg = bot.send_message(cid, "🤔 Анализирую геометрию детали...\nПрогресс: 0%")
+    settings = {
+        'light':   {'intensity': 0.05, 'dents': 4,  'label': 'Мелкие царапины (5см)', 'icon': '🤏'},
+        'medium':  {'intensity': 0.15, 'dents': 6,  'label': 'Средние вмятины (15см)', 'icon': '💪'},
+        'hard':    {'intensity': 0.30, 'dents': 10, 'label': 'Сильная авария (30см)', 'icon': '💥'},
+        'extreme': {'intensity': 0.50, 'dents': 14, 'label': 'Полный хлам (50см)', 'icon': '🔥'}
+    }
+    
+    s = settings.get(level, settings['medium'])
+    
+    status_msg = bot.send_message(cid, f"🤔 Анализирую геометрию...\nПрогресс: 0%")
     
     def process():
         time.sleep(0.5)
@@ -235,48 +246,53 @@ def process_damage(uid, cid):
             ext = Path(fp).suffix.lower()
             if ext != '.obj': continue
             try:
-                results = converter.damage_obj(fp)
-                if results:
-                    bot.send_message(uid, (
-                        "📦 *Создано 3 варианта повреждений:*\n\n"
-                        "1️⃣ `*_scratches.obj` — 🤏 Царапины (лёгкие)\n"
-                        "2️⃣ `*_crash.obj` — 💪 Авария (средние)\n"
-                        "3️⃣ `*_junk.obj` — 🔥 Хлам (сильные)\n\n"
-                        "✅ Края детали НЕ задеты.\n"
-                        "📂 Импортируйте нужный вариант в ZModeler."
-                    ), parse_mode="Markdown")
+                damaged, total_dents, main_verts = converter.damage_obj(fp, intensity=s['intensity'], num_dents=s['dents'])
+                if damaged:
+                    with open(damaged, 'rb') as f:
+                        bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']}")
                     
-                    for path, label, vid in results:
-                        with open(path, 'rb') as f:
-                            bot.send_document(uid, f, caption=f"{label}")
+                    bot.send_message(uid, (
+                        f"📊 *Отчёт о повреждениях*\n\n"
+                        f"▫️ Уровень: {s['label']}\n"
+                        f"▫️ Основная вмятина: 1 (центр)\n"
+                        f"▫️ Мелких вмятин: {s['dents']}\n"
+                        f"▫️ Задето вершин: ~{main_verts}\n"
+                        f"▫️ Края: НЕ задеты\n\n"
+                        f"📁 *Файл:* `{Path(damaged).name}`\n\n"
+                        f"💡 ZModeler → Export .dff → готово"
+                    ), parse_mode="Markdown")
             except Exception as e:
                 bot.send_message(uid, f"❌ Ошибка: {e}")
     
     threading.Thread(target=process).start()
-    send_progress(cid, status_msg.message_id, "🔧 Создаю 3 варианта...", 4)
+    send_progress(cid, status_msg.message_id, f"🔧 Наношу {s['label'].lower()}...", 3)
     try: bot.edit_message_text("✅ Готово!", cid, status_msg.message_id)
     except: pass
-    bot.send_message(cid, "✅ Готово! Выберите подходящий вариант.", reply_markup=get_menu_keyboard())
+    bot.send_message(cid, f"✅ Готово!", reply_markup=get_menu_keyboard())
 
 INSTRUCTION = (
-    "📋 *Как сделать повреждения:*\n\n"
-    "1️⃣ Скачайте ZModeler 2.5 (не 2.8!)\n"
-    "2️⃣ Откройте машину в ZModeler\n"
-    "3️⃣ Export → OBJ → нужная деталь → Accept\n"
-    "4️⃣ Отправьте .obj файл в бота\n"
-    "5️⃣ Нажмите 🚗 Повредить\n"
-    "6️⃣ Бот пришлёт 3 файла:\n"
-    "     • Царапины (лёгкие)\n"
-    "     • Авария (средние)\n"
-    "     • Хлам (сильные)\n"
-    "7️⃣ Import в ZModeler → Export .dff\n"
-    "8️⃣ Готово! Края не задеты."
+    "🔧 *Бот для модов Black Russia*\n\n"
+    "🎨 *Конвертировать:*\n"
+    "• PNG → BTX (сжатый, 512x512)\n\n"
+    "🚗 *Повредить:*\n"
+    "• Отправьте .obj детали\n"
+    "• Выберите уровень:\n"
+    "   🤏 Мелкие царапины (5см)\n"
+    "   💪 Средние вмятины (15см)\n"
+    "   💥 Сильная авария (30см)\n"
+    "   🔥 Полный хлам (50см)\n"
+    "• Края НЕ задеваются\n\n"
+    "📄 *Создать XML:*\n"
+    "• Для упаковки мода в BR\n\n"
+    "🆘 *Техподдержка:* @brmodels013\n\n"
+    "📂 Отправьте файл и выберите действие"
 )
 
 @bot.message_handler(commands=['start'])
 def start(msg):
     if not check_subscription(msg.from_user.id): send_subscription_message(msg.chat.id); return
     user_files[msg.from_user.id] = []
+    user_damage_level[msg.from_user.id] = 'medium'
     bot.reply_to(msg, INSTRUCTION, parse_mode="Markdown", reply_markup=get_menu_keyboard())
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_sub")
@@ -287,6 +303,18 @@ def check_sub_callback(call):
     else:
         bot.answer_callback_query(call.id, "❌ Не подписаны!", show_alert=True)
         send_subscription_message(call.message.chat.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("dmg_"))
+def damage_level_callback(call):
+    uid = call.from_user.id
+    level = call.data.replace("dmg_", "")
+    user_damage_level[uid] = level
+    
+    labels = {'light': '🤏 Мелкие (5см)', 'medium': '💪 Средние (15см)', 'hard': '💥 Авария (30см)', 'extreme': '🔥 Хлам (50см)'}
+    bot.answer_callback_query(call.id, f"Выбрано: {labels.get(level, 'Средние')}")
+    bot.edit_message_text(f"✅ {labels.get(level, 'Средние')}\nНачинаю...", call.message.chat.id, call.message.message_id)
+    
+    process_damage(uid, call.message.chat.id, level)
 
 @bot.message_handler(content_types=['document'])
 def handle_file(msg):
@@ -312,15 +340,32 @@ def analyze_cmd(msg):
         if not os.path.exists(fp): continue
         info = analyze_file(fp)
         if info:
-            text = f"📊 {os.path.basename(fp)}\n\nВершин: {info['verts']}\nПолигонов: {info['faces']}\nUV: {info['uvs']}\nРазмер: {info['size_kb']} КБ"
+            text = f"📊 {os.path.basename(fp)}\n\nВершин: {info['verts']}\nПолигонов: {info['faces']}\nUV: {info['uvs']}\nРазмер: {info['size_kb']} КБ\n{info['verdict']}"
             bot.reply_to(msg, text)
+
+@bot.message_handler(func=lambda msg: msg.text == "🎨 Конвертировать")
+def convert_cmd(msg):
+    uid = msg.from_user.id
+    if uid not in user_files or not user_files[uid]: 
+        bot.reply_to(msg, "Нет файлов. Отправьте PNG."); return
+    for fp in user_files[uid].copy():
+        try:
+            ext = Path(fp).suffix.lower()
+            if ext == '.png':
+                btx = converter._png_to_btx(fp)
+                if btx:
+                    with open(btx, 'rb') as f: 
+                        bot.send_document(uid, f, caption="BTX")
+        except Exception as e: 
+            bot.send_message(uid, f"Ошибка: {e}")
+    bot.send_message(uid, "✅ Готово!", reply_markup=get_menu_keyboard())
 
 @bot.message_handler(func=lambda msg: msg.text == "🚗 Повредить")
 def damage_cmd(msg):
     uid = msg.from_user.id
     if uid not in user_files or not user_files[uid]:
         bot.reply_to(msg, INSTRUCTION, parse_mode="Markdown"); return
-    process_damage(uid, msg.chat.id)
+    bot.reply_to(msg, "💥 *Выберите уровень:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
 
 @bot.message_handler(func=lambda msg: msg.text == "📄 Создать XML")
 def xml_cmd(msg):
@@ -370,7 +415,7 @@ def any_msg(msg):
     if any(w in text for w in ['помни', 'повреди', 'вмятина', 'дверь', 'двери']):
         if uid not in user_files or not user_files[uid]:
             bot.reply_to(msg, INSTRUCTION, parse_mode="Markdown"); return
-        process_damage(uid, msg.chat.id)
+        bot.reply_to(msg, "💥 *Выберите уровень:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
         return
     bot.reply_to(msg, "💬 Используйте меню.", reply_markup=get_menu_keyboard())
 
