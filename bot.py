@@ -69,12 +69,7 @@ class FullModelConverter:
             f.write(compressed.tobytes())
         return btx_path
 
-    def damage_obj(self, obj_path, intensity=0.15, num_dents=6):
-        """
-        Вмятины. Одна большая + несколько мелких.
-        Края НЕ задеваются (отступ 25%).
-        Глубина средних: 15 см.
-        """
+    def damage_obj(self, obj_path, intensity=0.40, num_dents=8):
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.read().split('\n')
         
@@ -202,7 +197,6 @@ def get_menu_keyboard():
         types.KeyboardButton("🚗 Повредить"),
         types.KeyboardButton("📄 Создать XML"),
         types.KeyboardButton("🆘 Техподдержка"),
-        types.KeyboardButton("📋 Список"),
         types.KeyboardButton("🗑 Очистить"),
         types.KeyboardButton("🔍 Анализ")
     )
@@ -211,10 +205,10 @@ def get_menu_keyboard():
 def get_damage_level_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
-        types.InlineKeyboardButton("🤏 Мелкие царапины (5см)", callback_data="dmg_light"),
-        types.InlineKeyboardButton("💪 Средние вмятины (15см)", callback_data="dmg_medium"),
-        types.InlineKeyboardButton("💥 Сильная авария (30см)", callback_data="dmg_hard"),
-        types.InlineKeyboardButton("🔥 Полный хлам (50см)", callback_data="dmg_extreme")
+        types.InlineKeyboardButton("🤏 Мелкие царапины (15см)", callback_data="dmg_light"),
+        types.InlineKeyboardButton("💪 Средние вмятины (40см)", callback_data="dmg_medium"),
+        types.InlineKeyboardButton("💥 Сильная авария (80см)", callback_data="dmg_hard"),
+        types.InlineKeyboardButton("🔥 Полный хлам (120см)", callback_data="dmg_extreme")
     )
     return markup
 
@@ -227,42 +221,45 @@ def send_progress(chat_id, message_id, text, duration=3):
 
 def process_damage(uid, cid, level='medium'):
     if uid not in user_files or not user_files[uid]:
-        bot.send_message(cid, "❌ Нет файлов."); return
+        bot.send_message(cid, "❌ Нет файлов. Отправьте .obj файл детали."); return
     
     settings = {
-        'light':   {'intensity': 0.05, 'dents': 4,  'label': 'Мелкие царапины (5см)', 'icon': '🤏'},
-        'medium':  {'intensity': 0.15, 'dents': 6,  'label': 'Средние вмятины (15см)', 'icon': '💪'},
-        'hard':    {'intensity': 0.30, 'dents': 10, 'label': 'Сильная авария (30см)', 'icon': '💥'},
-        'extreme': {'intensity': 0.50, 'dents': 14, 'label': 'Полный хлам (50см)', 'icon': '🔥'}
+        'light':   {'intensity': 0.15, 'dents': 5,  'label': 'Мелкие царапины (15см)', 'icon': '🤏'},
+        'medium':  {'intensity': 0.40, 'dents': 8,  'label': 'Средние вмятины (40см)', 'icon': '💪'},
+        'hard':    {'intensity': 0.80, 'dents': 12, 'label': 'Сильная авария (80см)', 'icon': '💥'},
+        'extreme': {'intensity': 1.20, 'dents': 16, 'label': 'Полный хлам (120см)', 'icon': '🔥'}
     }
     
     s = settings.get(level, settings['medium'])
+    print(f"[DEBUG] Уровень: {level}, интенсивность: {s['intensity']}, вмятин: {s['dents']}")
     
     status_msg = bot.send_message(cid, f"🤔 Анализирую геометрию...\nПрогресс: 0%")
     
     def process():
         time.sleep(0.5)
-        for fp in user_files[uid].copy():
-            ext = Path(fp).suffix.lower()
-            if ext != '.obj': continue
-            try:
-                damaged, total_dents, main_verts = converter.damage_obj(fp, intensity=s['intensity'], num_dents=s['dents'])
-                if damaged:
-                    with open(damaged, 'rb') as f:
-                        bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']}")
-                    
-                    bot.send_message(uid, (
-                        f"📊 *Отчёт о повреждениях*\n\n"
-                        f"▫️ Уровень: {s['label']}\n"
-                        f"▫️ Основная вмятина: 1 (центр)\n"
-                        f"▫️ Мелких вмятин: {s['dents']}\n"
-                        f"▫️ Задето вершин: ~{main_verts}\n"
-                        f"▫️ Края: НЕ задеты\n\n"
-                        f"📁 *Файл:* `{Path(damaged).name}`\n\n"
-                        f"💡 ZModeler → Export .dff → готово"
-                    ), parse_mode="Markdown")
-            except Exception as e:
-                bot.send_message(uid, f"❌ Ошибка: {e}")
+        fp = user_files[uid][-1]  # Только последний файл
+        ext = Path(fp).suffix.lower()
+        if ext != '.obj':
+            bot.send_message(uid, "❌ Нужен .obj файл.")
+            return
+        try:
+            damaged, total_dents, main_verts = converter.damage_obj(fp, intensity=s['intensity'], num_dents=s['dents'])
+            if damaged:
+                with open(damaged, 'rb') as f:
+                    bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']}")
+                
+                bot.send_message(uid, (
+                    f"📊 *Отчёт о повреждениях*\n\n"
+                    f"▫️ Уровень: {s['label']}\n"
+                    f"▫️ Основная вмятина: 1 (центр)\n"
+                    f"▫️ Мелких вмятин: {s['dents']}\n"
+                    f"▫️ Задето вершин: ~{main_verts}\n"
+                    f"▫️ Края: НЕ задеты\n\n"
+                    f"📁 *Файл:* `{Path(damaged).name}`\n\n"
+                    f"💡 ZModeler → Export .dff → готово"
+                ), parse_mode="Markdown")
+        except Exception as e:
+            bot.send_message(uid, f"❌ Ошибка: {e}")
     
     threading.Thread(target=process).start()
     send_progress(cid, status_msg.message_id, f"🔧 Наношу {s['label'].lower()}...", 3)
@@ -275,15 +272,18 @@ INSTRUCTION = (
     "🎨 *Конвертировать:*\n"
     "• PNG → BTX (сжатый, 512x512)\n\n"
     "🚗 *Повредить:*\n"
-    "• Отправьте .obj детали\n"
+    "• Отправьте ОДИН .obj файл детали\n"
     "• Выберите уровень:\n"
-    "   🤏 Мелкие царапины (5см)\n"
-    "   💪 Средние вмятины (15см)\n"
-    "   💥 Сильная авария (30см)\n"
-    "   🔥 Полный хлам (50см)\n"
-    "• Края НЕ задеваются\n\n"
+    "   🤏 Мелкие царапины (15см)\n"
+    "   💪 Средние вмятины (40см)\n"
+    "   💥 Сильная авария (80см)\n"
+    "   🔥 Полный хлам (120см)\n"
+    "• Края НЕ задеваются\n"
+    "• Бот обрабатывает только последний файл\n\n"
     "📄 *Создать XML:*\n"
     "• Для упаковки мода в BR\n\n"
+    "🗑 *Очистить:*\n"
+    "• Удаляет все загруженные файлы\n\n"
     "🆘 *Техподдержка:* @brmodels013\n\n"
     "📂 Отправьте файл и выберите действие"
 )
@@ -310,7 +310,12 @@ def damage_level_callback(call):
     level = call.data.replace("dmg_", "")
     user_damage_level[uid] = level
     
-    labels = {'light': '🤏 Мелкие (5см)', 'medium': '💪 Средние (15см)', 'hard': '💥 Авария (30см)', 'extreme': '🔥 Хлам (50см)'}
+    labels = {
+        'light': '🤏 Мелкие (15см)', 
+        'medium': '💪 Средние (40см)', 
+        'hard': '💥 Авария (80см)', 
+        'extreme': '🔥 Хлам (120см)'
+    }
     bot.answer_callback_query(call.id, f"Выбрано: {labels.get(level, 'Средние')}")
     bot.edit_message_text(f"✅ {labels.get(level, 'Средние')}\nНачинаю...", call.message.chat.id, call.message.message_id)
     
@@ -325,8 +330,13 @@ def handle_file(msg):
     fname = msg.document.file_name
     save_path = os.path.join(os.getcwd(), fname)
     with open(save_path, 'wb') as f: f.write(downloaded)
-    if uid not in user_files: user_files[uid] = []
-    user_files[uid].append(save_path)
+    
+    # Очищаем старые файлы — работаем только с новым
+    if uid in user_files:
+        for old_f in user_files[uid]:
+            if os.path.exists(old_f): os.remove(old_f)
+    user_files[uid] = [save_path]
+    
     info = analyze_file(save_path)
     a = ""
     if info: a = f"\n\n📊 {info['verts']} вершин | {info['faces']} полигонов | {info['verdict']}"
@@ -388,15 +398,6 @@ def support_cmd(msg):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("📩 Написать в ЛС", url=f"https://t.me/{SUPPORT_USERNAME.replace('@', '')}"))
     bot.reply_to(msg, f"По вопросам: {SUPPORT_USERNAME}", reply_markup=markup)
-
-@bot.message_handler(func=lambda msg: msg.text == "📋 Список")
-def list_cmd(msg):
-    uid = msg.from_user.id
-    if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Пусто."); return
-    text = "📁 Файлы:\n"
-    for f in user_files[uid]:
-        if os.path.exists(f): text += f"• {os.path.basename(f)}\n"
-    bot.reply_to(msg, text or "Пусто.")
 
 @bot.message_handler(func=lambda msg: msg.text == "🗑 Очистить")
 def clear_cmd(msg):
