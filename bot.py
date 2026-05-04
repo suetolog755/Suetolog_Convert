@@ -72,6 +72,7 @@ class FullModelConverter:
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.read().split('\n')
         
+        # Удаляем старые mtllib и vn
         lines = [l for l in lines if not l.startswith('mtllib ') and not l.startswith('vn ')]
         
         vert_entries = []
@@ -168,14 +169,26 @@ class FullModelConverter:
         for n in vertex_normals:
             lines.append(f"vn {n[0]:.6f} {n[1]:.6f} {n[2]:.6f}")
         
+        # Обновляем грани с проверкой индексов
+        max_vert = len(final_verts)
         for i, line in enumerate(lines):
             if line.startswith('f '):
                 parts = line.strip().split()
                 new_face = 'f'
+                valid = True
                 for p in parts[1:]:
                     idx = int(p.split('/')[0]) - 1
+                    if idx >= max_vert:
+                        valid = False
+                        break
                     new_face += f" {idx+1}/{idx+1}/{idx+1}"
-                lines[i] = new_face
+                if valid:
+                    lines[i] = new_face
+                else:
+                    lines[i] = ''  # Удаляем битую грань
+        
+        # Удаляем пустые строки
+        lines = [l for l in lines if l.strip()]
         
         damaged_name = f"{Path(obj_path).stem}_damaged"
         out_path = self.output_dir / f"{damaged_name}.obj"
@@ -324,7 +337,8 @@ def process_damage(uid, cid, level='medium'):
                     f"▫️ Вмятин: {total_dents}\n"
                     f"▫️ Задето вершин: ~{main_verts}\n"
                     f"▫️ Края: НЕ задеты\n"
-                    f"▫️ Нормали: пересчитаны\n\n"
+                    f"▫️ Нормали: пересчитаны\n"
+                    f"▫️ Битые грани: удалены\n\n"
                     f"📁 `{Path(damaged).name}`\n"
                     f"💡 Открой в ZModeler → Export .dff"
                 ), parse_mode="Markdown")
