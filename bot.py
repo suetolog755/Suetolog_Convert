@@ -11,7 +11,7 @@ from PIL import Image
 import telebot
 from telebot import types
 
-TOKEN = "8613630902:AAG40R1_fFUUvS1a8VFFf1WaWSCc9mFf1lQ"
+TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = "@brmodels095"
 CHANNEL_URL = "https://t.me/brmodels095"
 SUPPORT_USERNAME = "@brmodels013"
@@ -72,7 +72,6 @@ class FullModelConverter:
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.read().split('\n')
         
-        # Удаляем старые mtllib и vn
         lines = [l for l in lines if not l.startswith('mtllib ') and not l.startswith('vn ')]
         
         vert_entries = []
@@ -128,7 +127,7 @@ class FullModelConverter:
                     force = min((1-dist/small_radius)*intensity*0.5*random.uniform(0.5,1.5), max_push)
                     self._push_vertex(lines, idx, x, y, z, force, push_axis)
         
-        # === ПЕРЕСЧЁТ НОРМАЛЕЙ ===
+        # Пересчёт нормалей
         final_verts = []
         for line in lines:
             if line.startswith('v ') and not line.startswith('vt ') and not line.startswith('vn '):
@@ -178,11 +177,9 @@ class FullModelConverter:
                     new_face += f" {idx+1}/{idx+1}/{idx+1}"
                 lines[i] = new_face
         
-        # === СОХРАНЕНИЕ ===
         damaged_name = f"{Path(obj_path).stem}_damaged"
         out_path = self.output_dir / f"{damaged_name}.obj"
         
-        # Копируем MTL если есть
         if mtl_path and os.path.exists(mtl_path):
             new_mtl_name = f"{damaged_name}.mtl"
             new_mtl_path = self.output_dir / new_mtl_name
@@ -300,7 +297,6 @@ def process_damage(uid, cid, level='medium'):
     
     def process():
         time.sleep(0.5)
-        # Ищем OBJ и MTL
         obj_file = None
         mtl_file = None
         for fp in user_files[uid]:
@@ -317,7 +313,6 @@ def process_damage(uid, cid, level='medium'):
                 with open(damaged, 'rb') as f:
                     bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']}")
                 
-                # Отправляем MTL если был загружен
                 mtl_out = converter.output_dir / f"{Path(obj_file).stem}_damaged.mtl"
                 if mtl_out.exists():
                     with open(mtl_out, 'rb') as f:
@@ -349,16 +344,15 @@ FULL_INSTRUCTION = (
     "📂 *Какие файлы отправлять:*\n"
     "• .obj файл (геометрия детали)\n"
     "• .mtl файл (материалы, глянец)\n"
-    "• Отправьте оба файла в любом порядке\n\n"
+    "• Отправьте оба файла\n\n"
     "🚗 *Как сделать повреждения:*\n\n"
-    "1️⃣ Скачайте ZModeler 2.5\n"
-    "2️⃣ Откройте машину в ZModeler\n"
-    "3️⃣ Export → OBJ → нужная деталь → Accept\n"
-    "4️⃣ Отправьте .obj и .mtl в бота\n"
-    "5️⃣ Нажмите 🚗 Повредить\n"
-    "6️⃣ Выберите уровень\n"
-    "7️⃣ Скачайте повреждённый .obj + .mtl\n"
-    "8️⃣ Откройте в ZModeler → Export .dff\n\n"
+    "1️⃣ ZModeler 2.5\n"
+    "2️⃣ Откройте машину\n"
+    "3️⃣ Export → OBJ → деталь → Accept\n"
+    "4️⃣ Отправьте .obj + .mtl в бота\n"
+    "5️⃣ 🚗 Повредить → уровень\n"
+    "6️⃣ Скачайте .obj + .mtl\n"
+    "7️⃣ Откройте в ZModeler → Export .dff\n\n"
     "🎨 *Конвертировать:* PNG → BTX\n"
     "📄 *XML:* для упаковки мода в BR\n\n"
     "⚠️ ZModeler 2.5, не 2.8\n"
@@ -391,7 +385,7 @@ def agreement_callback(call):
         print(f"[AGREEMENT] {uid} ПРИНЯЛ")
         bot.answer_callback_query(call.id, "✅ Принято!")
         bot.edit_message_text("✅ Доступ открыт!", call.message.chat.id, call.message.message_id)
-        bot.send_message(call.message.chat.id, "🔧 *Бот для модов BR*\n\nОтправьте .obj + .mtl", parse_mode="Markdown", reply_markup=get_menu_keyboard())
+        bot.send_message(call.message.chat.id, "🔧 Отправьте .obj + .mtl", parse_mode="Markdown", reply_markup=get_menu_keyboard())
     else:
         print(f"[AGREEMENT] {uid} ОТКАЗАЛСЯ")
         bot.answer_callback_query(call.id, "❌ Запрещён", show_alert=True)
@@ -476,7 +470,7 @@ def damage_cmd(msg):
     uid = msg.from_user.id
     if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
     if uid not in user_files or not user_files[uid]:
-        bot.reply_to(msg, "❌ Нет файлов.\n📋 Нажмите «Инструкция».", reply_markup=get_menu_keyboard()); return
+        bot.reply_to(msg, "❌ Нет файлов.\n📋 Инструкция", reply_markup=get_menu_keyboard()); return
     bot.reply_to(msg, "💥 *Выберите уровень:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
 
 @bot.message_handler(func=lambda msg: msg.text == "📄 Создать XML")
