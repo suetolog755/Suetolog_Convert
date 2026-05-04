@@ -68,7 +68,7 @@ class FullModelConverter:
             f.write(compressed.tobytes())
         return btx_path
 
-    def damage_obj(self, obj_path, intensity=0.20, num_dents=8):
+    def damage_obj(self, obj_path, mtl_path=None, intensity=0.20, num_dents=8):
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.read().split('\n')
         
@@ -129,7 +129,6 @@ class FullModelConverter:
                     self._push_vertex(lines, idx, x, y, z, force, push_axis)
         
         # === ПЕРЕСЧЁТ НОРМАЛЕЙ ===
-        # Собираем финальные вершины
         final_verts = []
         for line in lines:
             if line.startswith('v ') and not line.startswith('vt ') and not line.startswith('vn '):
@@ -137,7 +136,6 @@ class FullModelConverter:
                 if len(parts) >= 4:
                     final_verts.append([float(parts[1]), float(parts[2]), float(parts[3])])
         
-        # Собираем грани
         final_faces = []
         for line in lines:
             if line.startswith('f '):
@@ -145,12 +143,9 @@ class FullModelConverter:
                 face = []
                 for p in parts[1:]:
                     idx = int(p.split('/')[0]) - 1
-                    if 0 <= idx < len(final_verts):
-                        face.append(idx)
-                if len(face) == 3:
-                    final_faces.append(face)
+                    if 0 <= idx < len(final_verts): face.append(idx)
+                if len(face) == 3: final_faces.append(face)
         
-        # Вычисляем нормали
         vertex_normals = [[0.0, 0.0, 0.0] for _ in final_verts]
         for face in final_faces:
             v0, v1, v2 = final_verts[face[0]], final_verts[face[1]], final_verts[face[2]]
@@ -171,11 +166,9 @@ class FullModelConverter:
             length = (n[0]**2 + n[1]**2 + n[2]**2) ** 0.5
             if length > 0: n[0] /= length; n[1] /= length; n[2] /= length
         
-        # Добавляем новые нормали
         for n in vertex_normals:
             lines.append(f"vn {n[0]:.6f} {n[1]:.6f} {n[2]:.6f}")
         
-        # Обновляем грани с индексами нормалей
         for i, line in enumerate(lines):
             if line.startswith('f '):
                 parts = line.strip().split()
@@ -189,28 +182,12 @@ class FullModelConverter:
         damaged_name = f"{Path(obj_path).stem}_damaged"
         out_path = self.output_dir / f"{damaged_name}.obj"
         
-        mtl_file = Path(obj_path).with_suffix('.mtl')
-        if mtl_file.exists():
-            mtl_content = mtl_file.read_text(encoding='utf-8', errors='ignore')
+        # Копируем MTL если есть
+        if mtl_path and os.path.exists(mtl_path):
             new_mtl_name = f"{damaged_name}.mtl"
             new_mtl_path = self.output_dir / new_mtl_name
-            for tex in Path(obj_path).parent.glob("*.png"):
-                shutil.copy(tex, self.output_dir / tex.name)
-            new_mtl_path.write_text(mtl_content, encoding='utf-8')
+            shutil.copy(mtl_path, new_mtl_path)
             lines.insert(0, f"mtllib {new_mtl_name}")
-        else:
-            textures = list(Path(obj_path).parent.glob("*.png"))
-            if textures:
-                new_mtl_name = f"{damaged_name}.mtl"
-                new_mtl_path = self.output_dir / new_mtl_name
-                mtl_lines = []
-                for tex in textures:
-                    shutil.copy(tex, self.output_dir / tex.name)
-                    mtl_lines.append(f"newmtl {tex.stem}")
-                    mtl_lines.append(f"map_Kd {tex.name}")
-                    mtl_lines.append("")
-                new_mtl_path.write_text('\n'.join(mtl_lines), encoding='utf-8')
-                lines.insert(0, f"mtllib {new_mtl_name}")
         
         with open(out_path, 'w') as f: f.write('\n'.join(lines))
         return out_path, 1+num_dents, main_damaged
@@ -269,10 +246,8 @@ def send_agreement(chat_id):
         "2. Не нарушаете авторские права третьих лиц\n"
         "3. Используете бот только для личных модов\n"
         "4. Понимаете что бот изменяет геометрию безвозвратно\n\n"
-        "✅ *Можно редактировать:*\n"
-        "• GTA SA, GTA V, LibertyCity, BeamNG, CRMP\n"
-        "• Собственноручно созданные модели\n\n"
-        "⚠️ *Black Russia:* запрещено, риск бана\n\n"
+        "✅ *Можно:* GTA SA, GTA V, LibertyCity, BeamNG, CRMP\n"
+        "⚠️ *Black Russia:* запрещено, риск бана\n"
         "🛡 Ответственность на пользователе.\n\n"
         "Нажимая «✅ Принимаю», вы соглашаетесь."
     ), parse_mode="Markdown", reply_markup=markup)
@@ -325,14 +300,28 @@ def process_damage(uid, cid, level='medium'):
     
     def process():
         time.sleep(0.5)
-        fp = user_files[uid][-1]
-        if Path(fp).suffix.lower() != '.obj':
-            bot.send_message(uid, "❌ Нужен .obj"); return
+        # Ищем OBJ и MTL
+        obj_file = None
+        mtl_file = None
+        for fp in user_files[uid]:
+            ext = Path(fp).suffix.lower()
+            if ext == '.obj': obj_file = fp
+            elif ext == '.mtl': mtl_file = fp
+        
+        if not obj_file:
+            bot.send_message(uid, "❌ Нужен .obj файл."); return
+        
         try:
-            damaged, total_dents, main_verts = converter.damage_obj(fp, intensity=s['intensity'], num_dents=s['dents'])
+            damaged, total_dents, main_verts = converter.damage_obj(obj_file, mtl_file, intensity=s['intensity'], num_dents=s['dents'])
             if damaged:
                 with open(damaged, 'rb') as f:
                     bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']}")
+                
+                # Отправляем MTL если был загружен
+                mtl_out = converter.output_dir / f"{Path(obj_file).stem}_damaged.mtl"
+                if mtl_out.exists():
+                    with open(mtl_out, 'rb') as f:
+                        bot.send_document(uid, f, caption="📄 MTL материал")
                 
                 bot.send_message(uid, (
                     f"📊 *Отчёт*\n\n"
@@ -340,10 +329,9 @@ def process_damage(uid, cid, level='medium'):
                     f"▫️ Вмятин: {total_dents}\n"
                     f"▫️ Задето вершин: ~{main_verts}\n"
                     f"▫️ Края: НЕ задеты\n"
-                    f"▫️ Нормали: пересчитаны\n"
-                    f"▫️ MTL: вшит\n\n"
+                    f"▫️ Нормали: пересчитаны\n\n"
                     f"📁 `{Path(damaged).name}`\n"
-                    f"💡 ZModeler → Export .dff"
+                    f"💡 Открой в ZModeler → Export .dff"
                 ), parse_mode="Markdown")
         except Exception as e:
             print(f"[ERROR] {uid}: {e}")
@@ -359,27 +347,22 @@ FULL_INSTRUCTION = (
     "📋 *Полная инструкция*\n\n"
     "🔧 *Бот для создания повреждений на деталях машин.*\n\n"
     "📂 *Какие файлы отправлять:*\n"
-    "• Только .obj файлы (геометрия детали)\n"
-    "• Файл должен быть экспортирован из ZModeler\n"
-    "• MTL и текстуры подхватятся автоматически\n\n"
+    "• .obj файл (геометрия детали)\n"
+    "• .mtl файл (материалы, глянец)\n"
+    "• Отправьте оба файла в любом порядке\n\n"
     "🚗 *Как сделать повреждения:*\n\n"
-    "1️⃣ Скачайте ZModeler 2.5 (не 2.8!)\n"
+    "1️⃣ Скачайте ZModeler 2.5\n"
     "2️⃣ Откройте машину в ZModeler\n"
     "3️⃣ Export → OBJ → нужная деталь → Accept\n"
-    "4️⃣ Отправьте .obj файл в бота\n"
+    "4️⃣ Отправьте .obj и .mtl в бота\n"
     "5️⃣ Нажмите 🚗 Повредить\n"
-    "6️⃣ Выберите уровень повреждений\n"
-    "7️⃣ Скачайте повреждённый .obj\n"
-    "8️⃣ Откройте в ZModeler → Export → DFF\n"
-    "9️⃣ Замените DFF в игре\n\n"
+    "6️⃣ Выберите уровень\n"
+    "7️⃣ Скачайте повреждённый .obj + .mtl\n"
+    "8️⃣ Откройте в ZModeler → Export .dff\n\n"
     "🎨 *Конвертировать:* PNG → BTX\n"
     "📄 *XML:* для упаковки мода в BR\n\n"
-    "⚠️ *Важно:*\n"
-    "• ZModeler 2.5, не 2.8\n"
-    "• Отправляйте по одному файлу\n"
-    "• Края не задеваются\n"
-    "• Нормали пересчитываются\n"
-    "• MTL вшивается в OBJ"
+    "⚠️ ZModeler 2.5, не 2.8\n"
+    "⚠️ Отправляйте .obj + .mtl вместе"
 )
 
 @bot.message_handler(commands=['start'])
@@ -393,7 +376,7 @@ def start(msg):
     bot.reply_to(msg, (
         "🔧 *Бот для модов BR*\n\n"
         "🎨 Конвертировать: PNG → BTX\n"
-        "🚗 Повредить: .obj детали\n"
+        "🚗 Повредить: .obj + .mtl\n"
         "📄 Создать XML\n"
         "📋 Инструкция\n"
         "🆘 Техподдержка: @brmodels013"
@@ -405,11 +388,10 @@ def agreement_callback(call):
     if call.data == "agree_yes":
         user_agreed[uid] = True
         user_files[uid] = []
-        user_damage_level[uid] = 'medium'
         print(f"[AGREEMENT] {uid} ПРИНЯЛ")
         bot.answer_callback_query(call.id, "✅ Принято!")
         bot.edit_message_text("✅ Доступ открыт!", call.message.chat.id, call.message.message_id)
-        bot.send_message(call.message.chat.id, "🔧 *Бот для модов BR*\n\n🎨 Конвертировать\n🚗 Повредить\n📄 XML\n📋 Инструкция", parse_mode="Markdown", reply_markup=get_menu_keyboard())
+        bot.send_message(call.message.chat.id, "🔧 *Бот для модов BR*\n\nОтправьте .obj + .mtl", parse_mode="Markdown", reply_markup=get_menu_keyboard())
     else:
         print(f"[AGREEMENT] {uid} ОТКАЗАЛСЯ")
         bot.answer_callback_query(call.id, "❌ Запрещён", show_alert=True)
@@ -450,10 +432,8 @@ def handle_file(msg):
     
     print(f"[FILE] {uid}: {fname}")
     
-    if uid in user_files:
-        for old_f in user_files[uid]:
-            if os.path.exists(old_f): os.remove(old_f)
-    user_files[uid] = [save_path]
+    if uid not in user_files: user_files[uid] = []
+    user_files[uid].append(save_path)
     
     info = analyze_file(save_path)
     a = ""
@@ -539,7 +519,7 @@ def any_msg(msg):
     text = msg.text.lower()
     if any(w in text for w in ['помни', 'повреди', 'вмятина', 'дверь']):
         if uid not in user_files or not user_files[uid]:
-            bot.reply_to(msg, "Сначала отправьте .obj файл.", reply_markup=get_menu_keyboard()); return
+            bot.reply_to(msg, "Сначала отправьте .obj + .mtl.", reply_markup=get_menu_keyboard()); return
         bot.reply_to(msg, "💥 *Выберите уровень:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
         return
     bot.reply_to(msg, "💬 Используйте меню.", reply_markup=get_menu_keyboard())
