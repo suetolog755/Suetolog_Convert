@@ -25,21 +25,19 @@ def analyze_file(file_path):
     try:
         ext = Path(file_path).suffix.lower()
         size_kb = os.path.getsize(file_path) // 1024
-        verts, faces, uvs = 0, 0, 0
+        verts, faces = 0, 0
         
         if ext == '.obj':
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
                     if line.startswith('v '): verts += 1
-                    elif line.startswith('vt '): uvs += 1
                     elif line.startswith('f '): faces += 1
         
         if verts > 65535: verdict = "Тяжёлая модель"
         elif verts > 40000: verdict = "Средняя модель"
         else: verdict = "Лёгкая модель"
         
-        return {'ext': ext, 'verts': verts, 'faces': faces, 'uvs': uvs,
-                'size_kb': size_kb, 'verdict': verdict}
+        return {'ext': ext, 'verts': verts, 'faces': faces, 'verdict': verdict}
     except: return None
 
 
@@ -74,7 +72,8 @@ class FullModelConverter:
         with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.read().split('\n')
         
-        lines = [l for l in lines if not l.startswith('mtllib ')]
+        # Удаляем старые mtllib и vn
+        lines = [l for l in lines if not l.startswith('mtllib ') and not l.startswith('vn ')]
         
         vert_entries = []
         for i, line in enumerate(lines):
@@ -129,6 +128,64 @@ class FullModelConverter:
                     force = min((1-dist/small_radius)*intensity*0.5*random.uniform(0.5,1.5), max_push)
                     self._push_vertex(lines, idx, x, y, z, force, push_axis)
         
+        # === ПЕРЕСЧЁТ НОРМАЛЕЙ ===
+        # Собираем финальные вершины
+        final_verts = []
+        for line in lines:
+            if line.startswith('v ') and not line.startswith('vt ') and not line.startswith('vn '):
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    final_verts.append([float(parts[1]), float(parts[2]), float(parts[3])])
+        
+        # Собираем грани
+        final_faces = []
+        for line in lines:
+            if line.startswith('f '):
+                parts = line.strip().split()
+                face = []
+                for p in parts[1:]:
+                    idx = int(p.split('/')[0]) - 1
+                    if 0 <= idx < len(final_verts):
+                        face.append(idx)
+                if len(face) == 3:
+                    final_faces.append(face)
+        
+        # Вычисляем нормали
+        vertex_normals = [[0.0, 0.0, 0.0] for _ in final_verts]
+        for face in final_faces:
+            v0, v1, v2 = final_verts[face[0]], final_verts[face[1]], final_verts[face[2]]
+            e1 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]]
+            e2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]]
+            nx = e1[1]*e2[2] - e1[2]*e2[1]
+            ny = e1[2]*e2[0] - e1[0]*e2[2]
+            nz = e1[0]*e2[1] - e1[1]*e2[0]
+            length = (nx*nx + ny*ny + nz*nz) ** 0.5
+            if length > 0: nx /= length; ny /= length; nz /= length
+            for fi in face:
+                vertex_normals[fi][0] += nx
+                vertex_normals[fi][1] += ny
+                vertex_normals[fi][2] += nz
+        
+        for i in range(len(vertex_normals)):
+            n = vertex_normals[i]
+            length = (n[0]**2 + n[1]**2 + n[2]**2) ** 0.5
+            if length > 0: n[0] /= length; n[1] /= length; n[2] /= length
+        
+        # Добавляем новые нормали
+        for n in vertex_normals:
+            lines.append(f"vn {n[0]:.6f} {n[1]:.6f} {n[2]:.6f}")
+        
+        # Обновляем грани с индексами нормалей
+        for i, line in enumerate(lines):
+            if line.startswith('f '):
+                parts = line.strip().split()
+                new_face = 'f'
+                for p in parts[1:]:
+                    idx = int(p.split('/')[0]) - 1
+                    new_face += f" {idx+1}/{idx+1}/{idx+1}"
+                lines[i] = new_face
+        
+        # === СОХРАНЕНИЕ ===
         damaged_name = f"{Path(obj_path).stem}_damaged"
         out_path = self.output_dir / f"{damaged_name}.obj"
         
@@ -149,8 +206,7 @@ class FullModelConverter:
                 mtl_lines = []
                 for tex in textures:
                     shutil.copy(tex, self.output_dir / tex.name)
-                    mat_name = tex.stem
-                    mtl_lines.append(f"newmtl {mat_name}")
+                    mtl_lines.append(f"newmtl {tex.stem}")
                     mtl_lines.append(f"map_Kd {tex.name}")
                     mtl_lines.append("")
                 new_mtl_path.write_text('\n'.join(mtl_lines), encoding='utf-8')
@@ -214,20 +270,11 @@ def send_agreement(chat_id):
         "3. Используете бот только для личных модов\n"
         "4. Понимаете что бот изменяет геометрию безвозвратно\n\n"
         "✅ *Можно редактировать:*\n"
-        "• Модели из GTA San Andreas (одиночная игра)\n"
-        "• Модели из GTA V (одиночная игра)\n"
-        "• Модели с LibertyCity, GTA5-Mods\n"
-        "• Модели из BeamNG.drive\n"
-        "• Модели из CRMP (с разрешения сервера)\n"
+        "• GTA SA, GTA V, LibertyCity, BeamNG, CRMP\n"
         "• Собственноручно созданные модели\n\n"
-        "⚠️ *Редактирование моделей из Black Russia:*\n"
-        "• Запрещено правилами игры\n"
-        "• Может привести к бану аккаунта\n"
-        "• Делаете на свой страх и риск\n\n"
-        "🛡 *Ответственность:*\n"
-        "Вся ответственность за использование бота\n"
-        "лежит на пользователе.\n\n"
-        "Нажимая «✅ Принимаю», вы соглашаетесь с условиями."
+        "⚠️ *Black Russia:* запрещено, риск бана\n\n"
+        "🛡 Ответственность на пользователе.\n\n"
+        "Нажимая «✅ Принимаю», вы соглашаетесь."
     ), parse_mode="Markdown", reply_markup=markup)
 
 def get_menu_keyboard():
@@ -246,10 +293,10 @@ def get_menu_keyboard():
 def get_damage_level_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
-        types.InlineKeyboardButton("🤏 Мелкие царапины (8см)", callback_data="dmg_light"),
-        types.InlineKeyboardButton("💪 Средние вмятины (20см)", callback_data="dmg_medium"),
-        types.InlineKeyboardButton("💥 Сильная авария (40см)", callback_data="dmg_hard"),
-        types.InlineKeyboardButton("🔥 Полный хлам (60см)", callback_data="dmg_extreme")
+        types.InlineKeyboardButton("🤏 Мелкие (8см)", callback_data="dmg_light"),
+        types.InlineKeyboardButton("💪 Средние (20см)", callback_data="dmg_medium"),
+        types.InlineKeyboardButton("💥 Авария (40см)", callback_data="dmg_hard"),
+        types.InlineKeyboardButton("🔥 Хлам (60см)", callback_data="dmg_extreme")
     )
     return markup
 
@@ -262,41 +309,41 @@ def send_progress(chat_id, message_id, text, duration=3):
 
 def process_damage(uid, cid, level='medium'):
     if uid not in user_files or not user_files[uid]:
-        bot.send_message(cid, "❌ Нет файлов. Отправьте .obj файл детали."); return
+        bot.send_message(cid, "❌ Нет файлов."); return
     
     settings = {
-        'light':   {'intensity': 0.08, 'dents': 5,  'label': 'Мелкие царапины (8см)', 'icon': '🤏'},
-        'medium':  {'intensity': 0.20, 'dents': 8,  'label': 'Средние вмятины (20см)', 'icon': '💪'},
-        'hard':    {'intensity': 0.40, 'dents': 12, 'label': 'Сильная авария (40см)', 'icon': '💥'},
-        'extreme': {'intensity': 0.60, 'dents': 16, 'label': 'Полный хлам (60см)', 'icon': '🔥'}
+        'light':   {'intensity': 0.08, 'dents': 5,  'label': 'Мелкие (8см)', 'icon': '🤏'},
+        'medium':  {'intensity': 0.20, 'dents': 8,  'label': 'Средние (20см)', 'icon': '💪'},
+        'hard':    {'intensity': 0.40, 'dents': 12, 'label': 'Авария (40см)', 'icon': '💥'},
+        'extreme': {'intensity': 0.60, 'dents': 16, 'label': 'Хлам (60см)', 'icon': '🔥'}
     }
     
     s = settings.get(level, settings['medium'])
-    print(f"[DAMAGE] Пользователь {uid} запросил: {s['label']}")
+    print(f"[DAMAGE] {uid}: {s['label']}")
     
-    status_msg = bot.send_message(cid, f"🤔 Анализирую...\nПрогресс: 0%")
+    status_msg = bot.send_message(cid, "🤔 Анализирую...\nПрогресс: 0%")
     
     def process():
         time.sleep(0.5)
         fp = user_files[uid][-1]
         if Path(fp).suffix.lower() != '.obj':
-            bot.send_message(uid, "❌ Нужен .obj файл."); return
+            bot.send_message(uid, "❌ Нужен .obj"); return
         try:
             damaged, total_dents, main_verts = converter.damage_obj(fp, intensity=s['intensity'], num_dents=s['dents'])
             if damaged:
                 with open(damaged, 'rb') as f:
                     bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']}")
                 
-                print(f"[DAMAGE] {uid}: {Path(damaged).name}, вмятин: {total_dents}")
                 bot.send_message(uid, (
                     f"📊 *Отчёт*\n\n"
                     f"▫️ Уровень: {s['label']}\n"
                     f"▫️ Вмятин: {total_dents}\n"
                     f"▫️ Задето вершин: ~{main_verts}\n"
                     f"▫️ Края: НЕ задеты\n"
-                    f"▫️ MTL: вшит в OBJ\n\n"
-                    f"📁 *Файл:* `{Path(damaged).name}`\n"
-                    f"💡 Открой в ZModeler → Export .dff"
+                    f"▫️ Нормали: пересчитаны\n"
+                    f"▫️ MTL: вшит\n\n"
+                    f"📁 `{Path(damaged).name}`\n"
+                    f"💡 ZModeler → Export .dff"
                 ), parse_mode="Markdown")
         except Exception as e:
             print(f"[ERROR] {uid}: {e}")
@@ -318,75 +365,55 @@ FULL_INSTRUCTION = (
     "🚗 *Как сделать повреждения:*\n\n"
     "1️⃣ Скачайте ZModeler 2.5 (не 2.8!)\n"
     "2️⃣ Откройте машину в ZModeler\n"
-    "3️⃣ Нажмите Export → OBJ → нужная деталь → Accept\n"
+    "3️⃣ Export → OBJ → нужная деталь → Accept\n"
     "4️⃣ Отправьте .obj файл в бота\n"
     "5️⃣ Нажмите 🚗 Повредить\n"
     "6️⃣ Выберите уровень повреждений\n"
-    "7️⃣ Скачайте повреждённый .obj файл\n"
-    "8️⃣ Откройте его в ZModeler → Export → DFF\n"
-    "9️⃣ Замените оригинальный DFF в игре\n\n"
-    "🎨 *Конвертировать:*\n"
-    "• Отправьте .png текстуру → получите .btx\n\n"
-    "📄 *Создать XML:*\n"
-    "• Отправьте .obj + .png → получите XML для BR\n\n"
+    "7️⃣ Скачайте повреждённый .obj\n"
+    "8️⃣ Откройте в ZModeler → Export → DFF\n"
+    "9️⃣ Замените DFF в игре\n\n"
+    "🎨 *Конвертировать:* PNG → BTX\n"
+    "📄 *XML:* для упаковки мода в BR\n\n"
     "⚠️ *Важно:*\n"
     "• ZModeler 2.5, не 2.8\n"
     "• Отправляйте по одному файлу\n"
-    "• Края деталей не задеваются\n"
-    "• MTL материалы сохраняются"
+    "• Края не задеваются\n"
+    "• Нормали пересчитываются\n"
+    "• MTL вшивается в OBJ"
 )
 
 @bot.message_handler(commands=['start'])
 def start(msg):
     uid = msg.from_user.id
-    username = msg.from_user.username or "нет username"
-    print(f"[START] Пользователь {uid} (@{username})")
-    
-    if not check_subscription(uid):
-        print(f"[BLOCK] {uid} не подписан")
-        send_subscription_message(msg.chat.id); return
-    
-    if uid not in user_agreed or not user_agreed[uid]:
-        send_agreement(msg.chat.id); return
+    if not check_subscription(uid): send_subscription_message(msg.chat.id); return
+    if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
     
     user_files[uid] = []
     user_damage_level[uid] = 'medium'
     bot.reply_to(msg, (
-        "🔧 *Бот для модов Black Russia*\n\n"
+        "🔧 *Бот для модов BR*\n\n"
         "🎨 Конвертировать: PNG → BTX\n"
-        "🚗 Повредить: отправьте .obj детали\n"
+        "🚗 Повредить: .obj детали\n"
         "📄 Создать XML\n"
-        "📋 Инструкция — полное руководство\n"
-        "🆘 Техподдержка: @brmodels013\n\n"
-        "📂 Отправьте файл и выберите действие\n"
-        "ℹ️ /start — это сообщение"
+        "📋 Инструкция\n"
+        "🆘 Техподдержка: @brmodels013"
     ), parse_mode="Markdown", reply_markup=get_menu_keyboard())
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("agree_"))
 def agreement_callback(call):
     uid = call.from_user.id
-    username = call.from_user.username or "нет username"
-    
     if call.data == "agree_yes":
         user_agreed[uid] = True
         user_files[uid] = []
         user_damage_level[uid] = 'medium'
-        print(f"[AGREEMENT] Пользователь {uid} (@{username}) ПРИНЯЛ соглашение")
-        bot.answer_callback_query(call.id, "✅ Соглашение принято!")
+        print(f"[AGREEMENT] {uid} ПРИНЯЛ")
+        bot.answer_callback_query(call.id, "✅ Принято!")
         bot.edit_message_text("✅ Доступ открыт!", call.message.chat.id, call.message.message_id)
-        bot.send_message(call.message.chat.id, (
-            "🔧 *Бот для модов Black Russia*\n\n"
-            "🎨 Конвертировать: PNG → BTX\n"
-            "🚗 Повредить: отправьте .obj детали\n"
-            "📄 Создать XML\n"
-            "📋 Инструкция — полное руководство\n"
-            "🆘 Техподдержка: @brmodels013\n\n"
-            "📂 Отправьте файл и выберите действие"
-        ), parse_mode="Markdown", reply_markup=get_menu_keyboard())
+        bot.send_message(call.message.chat.id, "🔧 *Бот для модов BR*\n\n🎨 Конвертировать\n🚗 Повредить\n📄 XML\n📋 Инструкция", parse_mode="Markdown", reply_markup=get_menu_keyboard())
     else:
-        print(f"[AGREEMENT] Пользователь {uid} (@{username}) ОТКАЗАЛСЯ")
-        bot.answer_callback_query(call.id, "❌ Доступ запрещён", show_alert=True)
-        bot.edit_message_text("❌ Вы отказались. Бот недоступен.", call.message.chat.id, call.message.message_id)
+        print(f"[AGREEMENT] {uid} ОТКАЗАЛСЯ")
+        bot.answer_callback_query(call.id, "❌ Запрещён", show_alert=True)
+        bot.edit_message_text("❌ Бот недоступен.", call.message.chat.id, call.message.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_sub")
 def check_sub_callback(call):
@@ -401,7 +428,7 @@ def check_sub_callback(call):
 def damage_level_callback(call):
     uid = call.from_user.id
     if uid not in user_agreed or not user_agreed[uid]:
-        bot.answer_callback_query(call.id, "❌ Примите соглашение /start", show_alert=True); return
+        bot.answer_callback_query(call.id, "❌ Примите соглашение", show_alert=True); return
     
     level = call.data.replace("dmg_", "")
     labels = {'light':'🤏 Мелкие','medium':'💪 Средние','hard':'💥 Авария','extreme':'🔥 Хлам'}
@@ -421,7 +448,7 @@ def handle_file(msg):
     save_path = os.path.join(os.getcwd(), fname)
     with open(save_path, 'wb') as f: f.write(downloaded)
     
-    print(f"[FILE] Пользователь {uid} загрузил: {fname} ({os.path.getsize(save_path)} байт)")
+    print(f"[FILE] {uid}: {fname}")
     
     if uid in user_files:
         for old_f in user_files[uid]:
@@ -436,8 +463,7 @@ def handle_file(msg):
 @bot.message_handler(func=lambda msg: msg.text == "📋 Инструкция")
 def instruction_cmd(msg):
     uid = msg.from_user.id
-    if uid not in user_agreed or not user_agreed[uid]:
-        send_agreement(msg.chat.id); return
+    if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
     bot.reply_to(msg, FULL_INSTRUCTION, parse_mode="Markdown", reply_markup=get_menu_keyboard())
 
 @bot.message_handler(func=lambda msg: msg.text == "🔍 Анализ")
@@ -455,13 +481,12 @@ def analyze_cmd(msg):
 def convert_cmd(msg):
     uid = msg.from_user.id
     if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
-    if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Нет файлов. Отправьте PNG."); return
+    if uid not in user_files or not user_files[uid]: bot.reply_to(msg, "Нет файлов."); return
     for fp in user_files[uid].copy():
         try:
             if Path(fp).suffix.lower() == '.png':
                 btx = converter._png_to_btx(fp)
                 if btx:
-                    print(f"[CONVERT] {uid}: PNG → BTX")
                     with open(btx, 'rb') as f: bot.send_document(uid, f, caption="BTX")
         except Exception as e: bot.send_message(uid, f"Ошибка: {e}")
     bot.send_message(uid, "✅ Готово!", reply_markup=get_menu_keyboard())
@@ -471,7 +496,7 @@ def damage_cmd(msg):
     uid = msg.from_user.id
     if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
     if uid not in user_files or not user_files[uid]:
-        bot.reply_to(msg, "❌ Нет файлов. Отправьте .obj файл детали.\n\n📋 Нажмите «Инструкция» для подробностей.", reply_markup=get_menu_keyboard()); return
+        bot.reply_to(msg, "❌ Нет файлов.\n📋 Нажмите «Инструкция».", reply_markup=get_menu_keyboard()); return
     bot.reply_to(msg, "💥 *Выберите уровень:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
 
 @bot.message_handler(func=lambda msg: msg.text == "📄 Создать XML")
@@ -486,7 +511,6 @@ def xml_cmd(msg):
         elif ext == '.png': png_names.append(Path(fp).stem)
     if not obj_file: bot.reply_to(msg, "❌ Нужен .obj"); return
     xml_path = converter.generate_xml(Path(obj_file).stem, os.path.basename(obj_file), png_names)
-    print(f"[XML] {uid}: {Path(xml_path).name}")
     with open(xml_path, 'rb') as f: bot.send_document(uid, f, caption="XML")
     user_files[uid] = []
     bot.send_message(uid, "✅ XML создан!", reply_markup=get_menu_keyboard())
@@ -504,7 +528,7 @@ def clear_cmd(msg):
         for f in user_files[uid]:
             if os.path.exists(f): os.remove(f)
         user_files[uid] = []
-    print(f"[CLEAR] Пользователь {uid} очистил файлы")
+    print(f"[CLEAR] {uid}")
     bot.reply_to(msg, "🗑 Очищено.")
 
 @bot.message_handler(func=lambda msg: True)
@@ -513,9 +537,9 @@ def any_msg(msg):
     if not check_subscription(uid): send_subscription_message(msg.chat.id); return
     if uid not in user_agreed or not user_agreed[uid]: send_agreement(msg.chat.id); return
     text = msg.text.lower()
-    if any(w in text for w in ['помни', 'повреди', 'вмятина', 'дверь', 'двери']):
+    if any(w in text for w in ['помни', 'повреди', 'вмятина', 'дверь']):
         if uid not in user_files or not user_files[uid]:
-            bot.reply_to(msg, "Сначала отправьте .obj файл детали.\n\n📋 Нажмите «Инструкция» для подробностей.", reply_markup=get_menu_keyboard()); return
+            bot.reply_to(msg, "Сначала отправьте .obj файл.", reply_markup=get_menu_keyboard()); return
         bot.reply_to(msg, "💥 *Выберите уровень:*", parse_mode="Markdown", reply_markup=get_damage_level_keyboard())
         return
     bot.reply_to(msg, "💬 Используйте меню.", reply_markup=get_menu_keyboard())
