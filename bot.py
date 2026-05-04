@@ -481,9 +481,16 @@ class FullModelConverter:
                 else:
                     lines[i] = ""
 
-        # clean
-
-        lines = [l for l in lines if l.strip()]
+        # clean — убираем всё что может сломать ZModeler
+        cleaned = []
+        for l in lines:
+            l = l.strip()
+            if not l:
+                continue
+            if l[0] not in ('v', 'f', 'm', 'u', '#'):
+                continue
+            cleaned.append(l)
+        lines = cleaned
 
         damaged_name = f"{Path(obj_path).stem}_damaged"
 
