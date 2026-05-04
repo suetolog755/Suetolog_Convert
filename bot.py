@@ -128,17 +128,20 @@ class FullModelConverter:
                     self._push_vertex(lines, idx, x, y, z, force, push_axis)
         
         out_path = self.output_dir / f"{Path(obj_path).stem}_damaged.obj"
-        with open(out_path, 'w') as f: f.write('\n'.join(lines))
         
-        # Копируем MTL файл
-        mtl_src = Path(obj_path).with_suffix('.mtl')
-        if mtl_src.exists():
-            shutil.copy(mtl_src, self.output_dir / mtl_src.name)
+        # Вставляем mtllib если есть MTL файл
+        mtl_file = Path(obj_path).with_suffix('.mtl')
+        if mtl_file.exists():
+            mtl_name = mtl_file.name
+            lines.insert(0, f"mtllib {mtl_name}")
+            # Копируем MTL
+            shutil.copy(mtl_file, self.output_dir / mtl_name)
         
-        # Копируем PNG текстуры
+        # Копируем текстуры
         for tex in Path(obj_path).parent.glob("*.png"):
             shutil.copy(tex, self.output_dir / tex.name)
         
+        with open(out_path, 'w') as f: f.write('\n'.join(lines))
         return out_path, 1+num_dents, main_damaged
     
     def _push_vertex(self, lines, idx, x, y, z, force, axis):
@@ -255,7 +258,7 @@ def process_damage(uid, cid, level='medium'):
     s = settings.get(level, settings['medium'])
     print(f"[DAMAGE] Пользователь {uid} запросил: {s['label']}")
     
-    status_msg = bot.send_message(cid, f"🤔 Анализирую геометрию...\nПрогресс: 0%")
+    status_msg = bot.send_message(cid, f"🤔 Анализирую...\nПрогресс: 0%")
     
     def process():
         time.sleep(0.5)
@@ -265,31 +268,19 @@ def process_damage(uid, cid, level='medium'):
         try:
             damaged, total_dents, main_verts = converter.damage_obj(fp, intensity=s['intensity'], num_dents=s['dents'])
             if damaged:
-                # Отправляем OBJ
+                # Отправляем OBJ (с mtllib внутри)
                 with open(damaged, 'rb') as f:
-                    bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']} — OBJ")
+                    bot.send_document(uid, f, caption=f"🚗 {s['icon']} {s['label']}")
                 
-                # Отправляем MTL если есть
-                mtl_file = converter.output_dir / f"{Path(fp).stem}.mtl"
-                if mtl_file.exists():
-                    with open(mtl_file, 'rb') as f:
-                        bot.send_document(uid, f, caption="📄 MTL материал")
-                
-                # Отправляем PNG текстуры
-                for tex in converter.output_dir.glob("*.png"):
-                    with open(tex, 'rb') as f:
-                        bot.send_document(uid, f, caption="🖼 Текстура")
-                
-                print(f"[DAMAGE] Пользователь {uid} получил: {Path(damaged).name}, вмятин: {total_dents}")
+                print(f"[DAMAGE] {uid}: {Path(damaged).name}, вмятин: {total_dents}")
                 bot.send_message(uid, (
                     f"📊 *Отчёт*\n\n"
                     f"▫️ Уровень: {s['label']}\n"
                     f"▫️ Вмятин: {total_dents}\n"
                     f"▫️ Задето вершин: ~{main_verts}\n"
-                    f"▫️ Края: НЕ задеты\n"
-                    f"▫️ MTL и текстуры: приложены\n\n"
+                    f"▫️ Края: НЕ задеты\n\n"
                     f"📁 *Файл:* `{Path(damaged).name}`\n"
-                    f"💡 ZModeler → Export .dff → готово"
+                    f"💡 Открой в ZModeler → Export .dff"
                 ), parse_mode="Markdown")
         except Exception as e:
             print(f"[ERROR] {uid}: {e}")
